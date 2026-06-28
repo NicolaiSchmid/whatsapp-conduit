@@ -32,6 +32,31 @@ describe("createLogger redaction", () => {
     expect(payload.body).toBe("[redacted]");
   });
 
+  it("censors a whole Baileys message container, including deep text", () => {
+    const records: Array<Record<string, unknown>> = [];
+    const stream = {
+      write(chunk: string) {
+        records.push(JSON.parse(chunk) as Record<string, unknown>);
+      },
+    };
+    const logger = createLogger({ logMessageText: false }, stream);
+
+    // Realistic deep Baileys shape wrapped under an arbitrary key.
+    logger.info(
+      {
+        event: {
+          message: { extendedTextMessage: { text: "secret deep text" } },
+        },
+      },
+      "wrapped",
+    );
+
+    const serialized = JSON.stringify(records[0]);
+    expect(serialized).not.toContain("secret deep text");
+    const event = records[0]?.event as Record<string, unknown>;
+    expect(event.message).toBe("[redacted]");
+  });
+
   it("retains message text only when explicitly enabled", () => {
     const { logger, records } = captureLogger(true);
     logger.info({ text: "secret plans" }, "msg");

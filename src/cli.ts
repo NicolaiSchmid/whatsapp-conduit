@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { runDoctor } from "./commands/doctor.js";
 import { getVersion } from "./version.js";
@@ -40,11 +42,25 @@ export async function main(argv: string[] = process.argv): Promise<void> {
   await program.parseAsync(argv);
 }
 
-const isDirectRun =
-  process.argv[1] !== undefined &&
-  import.meta.url === `file://${process.argv[1]}`;
+/**
+ * True when this module is the program entrypoint (not merely imported).
+ *
+ * Compares fully-resolved real paths so invocation through an npm bin symlink
+ * (e.g. `node_modules/.bin/whatsapp-conduit`) still runs `main()`: Node resolves
+ * `import.meta.url` to the real `dist/cli.js`, while `process.argv[1]` stays the
+ * symlink path, so a raw string compare would wrongly skip execution.
+ */
+function isDirectRun(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
+  } catch {
+    return false;
+  }
+}
 
-if (isDirectRun) {
+if (isDirectRun()) {
   main().catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`error: ${message}\n`);

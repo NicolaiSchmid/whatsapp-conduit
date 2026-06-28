@@ -20,6 +20,10 @@ media/
 *.sqlite
 *.sqlite3
 whatsapp-conduit.db*
+# SQLite crash-recovery / journal artifacts (can contain private DB pages)
+*-journal
+*-shm
+*-wal
 config.yaml
 config.yml
 config.local.yaml
