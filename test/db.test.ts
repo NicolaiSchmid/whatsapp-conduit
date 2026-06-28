@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkDatabase } from "../src/db/check.js";
 import { openDb } from "../src/db/index.js";
@@ -9,9 +12,11 @@ import {
 import {
   countMessages,
   getChat,
+  getConsumerOffset,
   getMessage,
   setChatAllowed,
   setChatBlocked,
+  setConsumerOffset,
   upsertAccount,
   upsertChat,
   upsertMessage,
@@ -106,6 +111,106 @@ describe("idempotent message persistence", () => {
       }),
     ).toThrow();
     db.close();
+  });
+});
+
+describe("partial-replay field preservation", () => {
+  it("preserves has_media on a replay that omits it", () => {
+    const db = freshDb();
+    upsertChat(db, { accountId: "acct", jid: "c@s.whatsapp.net" });
+    upsertMessage(db, {
+      accountId: "acct",
+      chatJid: "c@s.whatsapp.net",
+      messageId: "M1",
+      hasMedia: true,
+    });
+    // A revoke-style partial replay omits hasMedia.
+    upsertMessage(db, {
+      accountId: "acct",
+      chatJid: "c@s.whatsapp.net",
+      messageId: "M1",
+      deletedAt: 2000,
+    });
+    expect(getMessage(db, "acct", "c@s.whatsapp.net", "M1")?.has_media).toBe(1);
+    db.close();
+  });
+
+  it("preserves is_group/is_status and does not invent epoch-0 recency", () => {
+    const db = freshDb();
+    upsertChat(db, {
+      accountId: "acct",
+      jid: "g@g.us",
+      isGroup: true,
+      isStatus: false,
+      lastMessageTs: 1500,
+    });
+    // Metadata-only refresh that omits classification and timestamp.
+    upsertChat(db, { accountId: "acct", jid: "g@g.us", name: "Group" });
+    const chat = getChat(db, "acct", "g@g.us");
+    expect(chat?.is_group).toBe(1);
+    expect(chat?.name).toBe("Group");
+    expect(chat?.last_message_ts).toBe(1500);
+    db.close();
+  });
+
+  it("advances a chat's last_message_ts monotonically", () => {
+    const db = freshDb();
+    upsertChat(db, {
+      accountId: "acct",
+      jid: "c@s.whatsapp.net",
+      lastMessageTs: 100,
+    });
+    upsertChat(db, {
+      accountId: "acct",
+      jid: "c@s.whatsapp.net",
+      lastMessageTs: 50,
+    });
+    expect(getChat(db, "acct", "c@s.whatsapp.net")?.last_message_ts).toBe(100);
+    upsertChat(db, {
+      accountId: "acct",
+      jid: "c@s.whatsapp.net",
+      lastMessageTs: 200,
+    });
+    expect(getChat(db, "acct", "c@s.whatsapp.net")?.last_message_ts).toBe(200);
+    db.close();
+  });
+});
+
+describe("consumer offsets", () => {
+  it("preserves the other cursor on a partial advance", () => {
+    const db = freshDb();
+    setConsumerOffset(db, "hermes", {
+      lastSeenTimestamp: 1000,
+      lastSeenEventId: 5,
+    });
+    setConsumerOffset(db, "hermes", { lastSeenEventId: 9 });
+    const row = getConsumerOffset(db, "hermes");
+    expect(row?.last_seen_event_id).toBe(9);
+    expect(row?.last_seen_timestamp).toBe(1000);
+    db.close();
+  });
+});
+
+describe("file database: read-only open and permissions", () => {
+  it("opens read-only (no WAL write) and creates a 0600 db file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wac-db-"));
+    const path = join(dir, "conduit.db");
+    try {
+      const db = openDb(path, { migrate: true });
+      upsertAccount(db, { id: "acct" });
+      upsertChat(db, { accountId: "acct", jid: "c@s.whatsapp.net" });
+      db.close();
+
+      // Owner-only permissions on the database file.
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+
+      // Read-only open must not attempt the WAL pragma (which needs a write).
+      const ro = openDb(path, { migrate: false, readonly: true });
+      expect(getChat(ro, "acct", "c@s.whatsapp.net")).toBeDefined();
+      ro.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

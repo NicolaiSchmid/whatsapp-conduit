@@ -29,6 +29,13 @@ describe("resolveConfig", () => {
     expect(cfg.paths.mediaDir).toBe("/srv/wac/media");
   });
 
+  it("resolves a relative data_dir to an absolute path", () => {
+    const cfg = resolveConfig({ paths: { data_dir: "state" } });
+    expect(cfg.paths.dataDir.startsWith("/")).toBe(true);
+    expect(cfg.paths.dataDir.endsWith("/state")).toBe(true);
+    expect(cfg.paths.sqlite.startsWith("/")).toBe(true);
+  });
+
   it("resolves relative path overrides against the data dir", () => {
     const cfg = resolveConfig(
       { paths: { data_dir: "/srv/wac", sqlite: "db/main.db" } },

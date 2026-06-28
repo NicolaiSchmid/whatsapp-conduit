@@ -29,7 +29,8 @@ export interface InitReport {
 
 function ensureDir(path: string, created: string[]): void {
   if (!existsSync(path)) {
-    mkdirSync(path, { recursive: true });
+    // Owner-only: these hold private auth state, media, and the database.
+    mkdirSync(path, { recursive: true, mode: 0o700 });
     created.push(path);
   }
 }
@@ -45,9 +46,23 @@ export function runInit(options: InitOptions = {}): InitReport {
     ? { dataDir: options.dataDir }
     : {};
   const createdDirs: string[] = [];
+  const willWriteConfig = !existsSync(configPath) || Boolean(options.force);
+
+  // A --data-dir override must not silently shadow an existing config: it would
+  // migrate a different tree than the config (and later commands) point at.
+  if (!willWriteConfig && options.dataDir) {
+    const existing = loadConfig(configPath);
+    const requested = resolveConfig({}, resolveOptions).paths.dataDir;
+    if (existing.paths.dataDir !== requested) {
+      throw new Error(
+        `--data-dir (${requested}) conflicts with the existing config at ${configPath} ` +
+          `(data_dir = ${existing.paths.dataDir}). Edit the config or pass --force to rewrite it.`,
+      );
+    }
+  }
 
   let configCreated = false;
-  if (!existsSync(configPath) || options.force) {
+  if (willWriteConfig) {
     mkdirSync(dirname(configPath), { recursive: true });
     // Resolve defaults the same way the loader will, so the written file and
     // the in-memory config agree on paths.
@@ -56,7 +71,11 @@ export function runInit(options: InitOptions = {}): InitReport {
     configCreated = true;
   }
 
-  const config: Config = loadConfig(configPath, resolveOptions);
+  // Once a config exists, it is the single source of truth for paths; only a
+  // freshly written config honors the --data-dir override.
+  const config: Config = configCreated
+    ? loadConfig(configPath, resolveOptions)
+    : loadConfig(configPath);
 
   ensureDir(config.paths.dataDir, createdDirs);
   ensureDir(config.paths.authDir, createdDirs);
