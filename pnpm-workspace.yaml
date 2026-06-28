@@ -1,0 +1,10 @@
+allowBuilds:
+  baileys: true
+  better-sqlite3: true
+  esbuild: true
+  protobufjs: true
+onlyBuiltDependencies:
+  - baileys
+  - better-sqlite3
+  - esbuild
+  - protobufjs
