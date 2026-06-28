@@ -70,6 +70,29 @@ describe("createLogger redaction", () => {
     expect(row.message_id).toBe("M1");
   });
 
+  it("censors content in Baileys messages.upsert arrays", () => {
+    const { logger, records } = captureLogger(false);
+    logger.info(
+      {
+        type: "notify",
+        messages: [
+          { key: { id: "M1" }, message: { conversation: "secret one" } },
+          {
+            key: { id: "M2" },
+            message: { extendedTextMessage: { text: "secret two" } },
+          },
+        ],
+      },
+      "upsert",
+    );
+    const serialized = JSON.stringify(records[0]);
+    expect(serialized).not.toContain("secret one");
+    expect(serialized).not.toContain("secret two");
+    // Non-content metadata is preserved.
+    expect(serialized).toContain("M1");
+    expect(records[0]?.type).toBe("notify");
+  });
+
   it("retains message text only when explicitly enabled", () => {
     const { logger, records } = captureLogger(true);
     logger.info({ text: "secret plans" }, "msg");
