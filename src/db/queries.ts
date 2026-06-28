@@ -226,6 +226,32 @@ export function getChat(
     .get(accountId, jid);
 }
 
+export interface ListChatsOptions {
+  accountId?: string;
+  allowedOnly?: boolean;
+  limit?: number;
+}
+
+/** List chats, most-recently-active first. */
+export function listChats(
+  db: Database,
+  opts: ListChatsOptions = {},
+): ChatRow[] {
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (opts.accountId) {
+    where.push("account_id = @accountId");
+    params.accountId = opts.accountId;
+  }
+  if (opts.allowedOnly) where.push("is_allowed = 1");
+  if (opts.limit != null) params.limit = opts.limit;
+  const sql =
+    `select * from chats ${where.length ? `where ${where.join(" and ")}` : ""} ` +
+    `order by coalesce(last_message_ts, 0) desc, jid asc ` +
+    `${opts.limit != null ? "limit @limit" : ""}`;
+  return db.prepare(sql).all(params) as ChatRow[];
+}
+
 export interface ParticipantInput {
   accountId: string;
   jid: string;
@@ -360,6 +386,110 @@ export function getMessage(
       MessageRow
     >("select * from messages where account_id = ? and chat_jid = ? and message_id = ?")
     .get(accountId, chatJid, messageId);
+}
+
+export interface ListMessagesOptions {
+  accountId?: string;
+  chatJid?: string;
+  sinceTs?: number | null;
+  limit?: number;
+}
+
+/** List messages, most-recent first (for human/JSON inspection). */
+export function listMessages(
+  db: Database,
+  opts: ListMessagesOptions = {},
+): MessageRow[] {
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (opts.accountId) {
+    where.push("account_id = @accountId");
+    params.accountId = opts.accountId;
+  }
+  if (opts.chatJid) {
+    where.push("chat_jid = @chatJid");
+    params.chatJid = opts.chatJid;
+  }
+  if (opts.sinceTs != null) {
+    where.push("timestamp >= @sinceTs");
+    params.sinceTs = opts.sinceTs;
+  }
+  if (opts.limit != null) params.limit = opts.limit;
+  const sql =
+    `select * from messages ${where.length ? `where ${where.join(" and ")}` : ""} ` +
+    `order by coalesce(timestamp, 0) desc, rowid desc ` +
+    `${opts.limit != null ? "limit @limit" : ""}`;
+  return db.prepare(sql).all(params) as MessageRow[];
+}
+
+export interface ExportRow extends MessageRow {
+  /** Stable per-row cursor for resumable export (the message's SQLite rowid). */
+  export_rowid: number;
+  chat_name: string | null;
+  chat_is_group: number;
+  chat_is_status: number;
+  chat_is_allowed: number;
+}
+
+export interface ExportSelect {
+  accountId?: string;
+  /** Inclusive lower bound on message timestamp (epoch seconds). */
+  sinceTs?: number | null;
+  /** Exclusive lower bound on the rowid cursor (for --since-last). */
+  afterRowid?: number | null;
+  /** Restrict to allowed chats (is_allowed = 1 or in `allowedChats`). */
+  allowedOnly?: boolean;
+  allowedChats?: string[];
+  limit?: number;
+}
+
+/**
+ * Select messages for export in deterministic ingestion order (ascending
+ * rowid), joined with their chat. `export_rowid` is the resumable cursor used
+ * by consumer offsets.
+ */
+export function selectExportMessages(
+  db: Database,
+  sel: ExportSelect = {},
+): ExportRow[] {
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (sel.accountId) {
+    where.push("m.account_id = @accountId");
+    params.accountId = sel.accountId;
+  }
+  if (sel.sinceTs != null) {
+    where.push("m.timestamp >= @sinceTs");
+    params.sinceTs = sel.sinceTs;
+  }
+  if (sel.afterRowid != null) {
+    where.push("m.rowid > @afterRowid");
+    params.afterRowid = sel.afterRowid;
+  }
+  if (sel.allowedOnly) {
+    const allow = sel.allowedChats ?? [];
+    const placeholders = allow.map((_, i) => `@ac${i}`);
+    allow.forEach((jid, i) => {
+      params[`ac${i}`] = jid;
+    });
+    const inClause =
+      placeholders.length > 0
+        ? ` or m.chat_jid in (${placeholders.join(", ")})`
+        : "";
+    where.push(`(c.is_allowed = 1${inClause})`);
+  }
+  if (sel.limit != null) params.limit = sel.limit;
+
+  const sql =
+    `select m.rowid as export_rowid, m.*, ` +
+    `c.name as chat_name, c.is_group as chat_is_group, ` +
+    `c.is_status as chat_is_status, c.is_allowed as chat_is_allowed ` +
+    `from messages m ` +
+    `join chats c on c.account_id = m.account_id and c.jid = m.chat_jid ` +
+    `${where.length ? `where ${where.join(" and ")}` : ""} ` +
+    `order by m.rowid asc ` +
+    `${sel.limit != null ? "limit @limit" : ""}`;
+  return db.prepare(sql).all(params) as ExportRow[];
 }
 
 export function countMessages(db: Database, accountId?: string): number {
