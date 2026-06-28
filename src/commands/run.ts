@@ -1,6 +1,7 @@
 import { loadConfig } from "../config.js";
 import { authStateExists, openAuthState } from "../baileys/auth.js";
 import { ConduitConnection } from "../baileys/connect.js";
+import { registerIngestion } from "../baileys/ingest.js";
 import { openDb } from "../db/index.js";
 import { upsertAccount } from "../db/queries.js";
 import { appLogger, baileysLogger, resolveConfigPath } from "../runtime.js";
@@ -87,9 +88,14 @@ export async function runRun(options: RunOptions = {}): Promise<void> {
             "connection closed",
           );
         },
-        // Ingestion handlers (messages.upsert, etc.) are registered here in the
-        // message-ingestion change; observe-only connection lands first.
-        registerSocket() {},
+        registerSocket(sock) {
+          registerIngestion(sock, {
+            db,
+            accountId: config.account.name,
+            config,
+            logger: log,
+          });
+        },
       },
     });
 
