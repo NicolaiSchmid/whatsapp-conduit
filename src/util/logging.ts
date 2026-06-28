@@ -27,19 +27,27 @@ export interface LoggerConfig {
 }
 
 /**
- * Field paths that may carry WhatsApp message content. Redacted unless the
+ * Field paths that may carry WhatsApp message content, redacted unless the
  * operator explicitly sets `logging.log_message_text: true`.
+ *
+ * Two layers of defense-in-depth (the primary guard is simply never passing
+ * raw payloads to the logger):
+ *  - scalar leaf keys (`text`, `caption`, ...) at the root and one wrapper deep
+ *  - whole content containers (`message`, `raw`, `rawJson`) censored wholesale
+ *    at the root and one wrapper deep — censoring the container removes every
+ *    nested Baileys field beneath it (e.g. `message.extendedTextMessage.text`)
+ *    regardless of its depth, which point wildcards cannot reach.
+ *
+ * `msg` is intentionally NOT redacted: pino stores the log message string there.
  */
+const CONTENT_LEAF_KEYS = ["text", "caption", "body", "conversation"] as const;
+const CONTENT_CONTAINER_KEYS = ["message", "raw", "rawJson"] as const;
+
 const REDACT_PATHS = [
-  "text",
-  "caption",
-  "body",
-  "conversation",
-  "message",
-  "*.text",
-  "*.caption",
-  "*.body",
-  "*.conversation",
+  ...CONTENT_LEAF_KEYS,
+  ...CONTENT_LEAF_KEYS.map((k) => `*.${k}`),
+  ...CONTENT_CONTAINER_KEYS,
+  ...CONTENT_CONTAINER_KEYS.map((k) => `*.${k}`),
 ] as const;
 
 export function createLogger(
