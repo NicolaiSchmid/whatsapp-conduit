@@ -1,0 +1,17 @@
+[Unit]
+Description=whatsapp-conduit observe-only WhatsApp -> SQLite sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust the paths to your install. For a global install, ExecStart can simply
+# be: /usr/local/bin/whatsapp-conduit --config %h/.config/whatsapp-conduit/config.yaml run
+ExecStart=/usr/bin/node /opt/whatsapp-conduit/dist/cli.js --config %h/.config/whatsapp-conduit/config.yaml run
+Restart=always
+RestartSec=10
+WorkingDirectory=%h/.local/share/whatsapp-conduit
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

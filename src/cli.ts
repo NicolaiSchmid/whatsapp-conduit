@@ -16,6 +16,11 @@ import { runLink } from "./commands/link.js";
 import { runMessagesList } from "./commands/messages.js";
 import { runOffsetsCommit, runOffsetsShow } from "./commands/offsets.js";
 import { runRun } from "./commands/run.js";
+import {
+  runServiceControl,
+  runServiceInstall,
+  type ServiceAction,
+} from "./commands/service.js";
 import { runStatus } from "./commands/status.js";
 import { getVersion } from "./version.js";
 
@@ -263,6 +268,39 @@ export function buildProgram(): Command {
         json: opts.json,
       });
     });
+
+  const service = program
+    .command("service")
+    .description("manage the systemd user service");
+
+  service
+    .command("install")
+    .description("write and load a systemd user unit for `run`")
+    .option("--now", "enable and start the service immediately")
+    .option("--working-dir <path>", "WorkingDirectory for the unit")
+    .action((opts: { now?: boolean; workingDir?: string }) => {
+      const globals = program.opts<GlobalOptions>();
+      runServiceInstall({
+        configPath: globals.config,
+        now: opts.now,
+        workingDirectory: opts.workingDir,
+      });
+    });
+
+  for (const action of [
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "logs",
+  ] as const) {
+    service
+      .command(action)
+      .description(`${action} the systemd user service`)
+      .action(() => {
+        process.exitCode = runServiceControl(action as ServiceAction);
+      });
+  }
 
   const db = program.command("db").description("database maintenance commands");
 
