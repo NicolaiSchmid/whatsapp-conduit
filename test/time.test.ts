@@ -32,8 +32,24 @@ describe("parseSinceSec", () => {
     expect(parseSinceSec("1699990000", now)).toBe(1_699_990_000);
   });
 
-  it("accepts ISO-8601 datetimes", () => {
+  it("accepts timezone-aware ISO-8601 datetimes", () => {
     expect(parseSinceSec("2023-11-14T22:13:20Z", now)).toBe(1_700_000_000);
+    expect(parseSinceSec("2023-11-14T23:13:20+01:00", now)).toBe(1_700_000_000);
+  });
+
+  it("accepts a bare ISO date (UTC midnight)", () => {
+    expect(parseSinceSec("2023-11-14", now)).toBe(
+      Date.parse("2023-11-14T00:00:00Z") / 1000,
+    );
+  });
+
+  it("rejects a timezone-less datetime as ambiguous", () => {
+    expect(() => parseSinceSec("2026-06-28T00:00:00", now)).toThrow(
+      /timezone/i,
+    );
+    expect(() => parseSinceSec("2026-06-28 12:00:00", now)).toThrow(
+      /timezone/i,
+    );
   });
 
   it("throws on garbage", () => {

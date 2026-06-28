@@ -27,6 +27,10 @@ whatsapp-conduit.db*
 config.yaml
 config.yml
 config.local.yaml
+# Exported message data is private (see AGENTS.md): never commit exports.
+exports/
+*.jsonl
+*.ndjson
 
 # Local env
 .env

@@ -57,6 +57,19 @@ describe("createLogger redaction", () => {
     expect(event.message).toBe("[redacted]");
   });
 
+  it("censors persisted snake_case raw_json payloads", () => {
+    const { logger, records } = captureLogger(false);
+    logger.info(
+      { row: { message_id: "M1", raw_json: '{"conversation":"secret"}' } },
+      "row",
+    );
+    const serialized = JSON.stringify(records[0]);
+    expect(serialized).not.toContain("secret");
+    const row = records[0]?.row as Record<string, unknown>;
+    expect(row.raw_json).toBe("[redacted]");
+    expect(row.message_id).toBe("M1");
+  });
+
   it("retains message text only when explicitly enabled", () => {
     const { logger, records } = captureLogger(true);
     logger.info({ text: "secret plans" }, "msg");

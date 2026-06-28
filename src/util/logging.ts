@@ -33,15 +33,22 @@ export interface LoggerConfig {
  * Two layers of defense-in-depth (the primary guard is simply never passing
  * raw payloads to the logger):
  *  - scalar leaf keys (`text`, `caption`, ...) at the root and one wrapper deep
- *  - whole content containers (`message`, `raw`, `rawJson`) censored wholesale
- *    at the root and one wrapper deep — censoring the container removes every
- *    nested Baileys field beneath it (e.g. `message.extendedTextMessage.text`)
- *    regardless of its depth, which point wildcards cannot reach.
+ *  - whole content containers censored wholesale at the root and one wrapper
+ *    deep — censoring the container removes every nested Baileys field beneath
+ *    it (e.g. `message.extendedTextMessage.text`) regardless of its depth,
+ *    which point wildcards cannot reach. Both the camelCase (`rawJson`) and the
+ *    persisted snake_case (`raw_json`) forms of the raw payload are covered,
+ *    since DB rows carry the latter.
  *
  * `msg` is intentionally NOT redacted: pino stores the log message string there.
  */
 const CONTENT_LEAF_KEYS = ["text", "caption", "body", "conversation"] as const;
-const CONTENT_CONTAINER_KEYS = ["message", "raw", "rawJson"] as const;
+const CONTENT_CONTAINER_KEYS = [
+  "message",
+  "raw",
+  "rawJson",
+  "raw_json",
+] as const;
 
 const REDACT_PATHS = [
   ...CONTENT_LEAF_KEYS,
