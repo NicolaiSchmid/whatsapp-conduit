@@ -1117,13 +1117,26 @@ Baileys itself is MIT-licensed. If this project remains a small utility intended
 
 ## Status
 
-Planning / README scaffold. No implementation yet.
+MVP implemented. The observe-only bridge links a WhatsApp account, ingests and
+normalizes messages into SQLite idempotently, applies chat allow/block filters,
+and exposes CLI inspection plus deterministic JSONL exports with resumable
+consumer offsets. A systemd user service wraps the daemon.
 
-Current working folder:
+Quickstart:
 
-```text
-/srv/agents-state/workspace/personal/whatsapp-conduit
+```bash
+pnpm install && pnpm build
+whatsapp-conduit init
+whatsapp-conduit link
+whatsapp-conduit run
 ```
+
+See [`docs/operations.md`](docs/operations.md),
+[`docs/security.md`](docs/security.md), and [`docs/schema.md`](docs/schema.md).
+
+Implemented commands: `doctor`, `init`, `link`, `run`, `status`,
+`chats list|show|allow|block`, `messages list`, `export`,
+`offsets commit|show`, `db migrate|check`, `service install|start|stop|restart|status|logs`.
 
 Current working name:
 
