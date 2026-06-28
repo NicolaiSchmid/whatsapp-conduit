@@ -44,13 +44,15 @@ export function parseDurationSec(value: string): number {
  * - absolute epoch seconds: a bare integer
  * - ISO-8601 datetime with an explicit timezone: `2026-06-28T00:00:00Z`
  *
- * A datetime that carries a clock time but no timezone (e.g.
- * `2026-06-28T00:00:00`) is rejected: `Date.parse` would interpret it in the
- * host's local timezone, making exports non-deterministic across machines. A
- * bare ISO date (`2026-06-28`) is allowed — ISO 8601 fixes it to UTC midnight.
+ * Only these absolute forms are accepted; anything else (e.g. `2026/06/28`,
+ * `June 28, 2026`) is rejected rather than handed to `Date.parse`, which would
+ * interpret loose/locale formats in the host's local timezone and make exports
+ * non-deterministic across machines. A bare ISO date is pinned to UTC midnight;
+ * an ISO datetime must carry an explicit timezone (`Z` or `±HH:MM`).
  */
-const HAS_CLOCK_TIME_RE = /[T ]\d{2}:\d{2}/;
-const HAS_TIMEZONE_RE = /(Z|[+-]\d{2}:?\d{2})$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATETIME_RE =
+  /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?)(Z|[+-]\d{2}:?\d{2})?$/;
 
 export function parseSinceSec(value: string, now: number = nowSec()): number {
   const trimmed = value.trim();
@@ -63,19 +65,24 @@ export function parseSinceSec(value: string, now: number = nowSec()): number {
     return Number(trimmed);
   }
 
-  if (HAS_CLOCK_TIME_RE.test(trimmed) && !HAS_TIMEZONE_RE.test(trimmed)) {
-    throw new Error(
-      `Ambiguous --since datetime "${value}": include a timezone (e.g. "${trimmed}Z" or an explicit offset). ` +
-        "Timezone-less datetimes are interpreted in the host timezone and make exports non-deterministic.",
-    );
+  if (ISO_DATE_RE.test(trimmed)) {
+    // ISO 8601 date-only is UTC; pin it explicitly for determinism.
+    return Date.parse(`${trimmed}T00:00:00Z`) / 1000;
   }
 
-  const parsed = Date.parse(trimmed);
-  if (!Number.isNaN(parsed)) {
-    return Math.floor(parsed / 1000);
+  const dateTime = ISO_DATETIME_RE.exec(trimmed);
+  if (dateTime) {
+    const [, date, time, tz] = dateTime;
+    if (!tz) {
+      throw new Error(
+        `Ambiguous --since datetime "${value}": include a timezone (e.g. "${date}T${time}Z" or an explicit offset). ` +
+          "Timezone-less datetimes are interpreted in the host timezone and make exports non-deterministic.",
+      );
+    }
+    return Math.floor(Date.parse(`${date}T${time}${tz}`) / 1000);
   }
 
   throw new Error(
-    `Invalid --since value "${value}". Expected a duration (e.g. "24h"), epoch seconds, or a timezone-aware ISO-8601 datetime.`,
+    `Invalid --since value "${value}". Expected a duration (e.g. "24h"), epoch seconds, a bare ISO date (2026-06-28), or a timezone-aware ISO-8601 datetime.`,
   );
 }

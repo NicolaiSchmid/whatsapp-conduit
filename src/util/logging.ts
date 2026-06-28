@@ -39,6 +39,9 @@ export interface LoggerConfig {
  *    which point wildcards cannot reach. Both the camelCase (`rawJson`) and the
  *    persisted snake_case (`raw_json`) forms of the raw payload are covered,
  *    since DB rows carry the latter.
+ *  - per-element coverage for Baileys batch arrays (`messages.upsert` emits
+ *    `{ messages: [{ message: {...} }] }`): each array element's content
+ *    container is censored, at the root and one wrapper deep.
  *
  * `msg` is intentionally NOT redacted: pino stores the log message string there.
  */
@@ -49,12 +52,20 @@ const CONTENT_CONTAINER_KEYS = [
   "rawJson",
   "raw_json",
 ] as const;
+/** Array-valued wrappers whose elements each carry a content container. */
+const ARRAY_WRAPPER_KEYS = ["messages"] as const;
 
 const REDACT_PATHS = [
   ...CONTENT_LEAF_KEYS,
   ...CONTENT_LEAF_KEYS.map((k) => `*.${k}`),
   ...CONTENT_CONTAINER_KEYS,
   ...CONTENT_CONTAINER_KEYS.map((k) => `*.${k}`),
+  ...ARRAY_WRAPPER_KEYS.flatMap((arr) =>
+    CONTENT_CONTAINER_KEYS.flatMap((k) => [
+      `${arr}[*].${k}`,
+      `*.${arr}[*].${k}`,
+    ]),
+  ),
 ] as const;
 
 export function createLogger(

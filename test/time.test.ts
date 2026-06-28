@@ -52,6 +52,14 @@ describe("parseSinceSec", () => {
     );
   });
 
+  it("rejects non-ISO date formats (locale/slash) before Date.parse", () => {
+    expect(() => parseSinceSec("2026/06/28", now)).toThrow(/Invalid --since/);
+    expect(() => parseSinceSec("June 28, 2026", now)).toThrow(
+      /Invalid --since/,
+    );
+    expect(() => parseSinceSec("28-06-2026", now)).toThrow(/Invalid --since/);
+  });
+
   it("throws on garbage", () => {
     expect(() => parseSinceSec("yesterday", now)).toThrow();
   });
