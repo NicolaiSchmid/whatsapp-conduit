@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,6 +42,22 @@ describe("runInit", () => {
     const body = readFileSync(configPath, "utf8");
     expect(body).toContain("observe_only: true");
     expect(body).toContain("send_enabled: false");
+  });
+
+  it("creates state directories owner-only (0700)", () => {
+    const configPath = join(dir, "config.yaml");
+    const dataDir = join(dir, "data");
+    runInit({ configPath, dataDir });
+    expect(statSync(join(dataDir, "auth")).mode & 0o777).toBe(0o700);
+    expect(statSync(dataDir).mode & 0o777).toBe(0o700);
+  });
+
+  it("rejects a --data-dir that conflicts with an existing config", () => {
+    const configPath = join(dir, "config.yaml");
+    runInit({ configPath, dataDir: join(dir, "data") });
+    expect(() => runInit({ configPath, dataDir: join(dir, "other") })).toThrow(
+      /conflicts with the existing config/,
+    );
   });
 
   it("is idempotent and leaves an existing config in place", () => {

@@ -93,11 +93,13 @@ export function upsertChat(db: Database, input: ChatInput): void {
      on conflict (account_id, jid) do update set
        name = coalesce(excluded.name, chats.name),
        push_name = coalesce(excluded.push_name, chats.push_name),
-       is_group = excluded.is_group,
-       is_status = excluded.is_status,
+       -- Only reclassify group/status when the caller actually provided it.
+       is_group = case when @isGroupSet = 1 then @isGroup else chats.is_group end,
+       is_status = case when @isStatusSet = 1 then @isStatus else chats.is_status end,
+       -- Null-safe max: never invent epoch-0 when neither side has a timestamp.
        last_message_ts = max(
-         coalesce(excluded.last_message_ts, 0),
-         coalesce(chats.last_message_ts, 0)
+         coalesce(excluded.last_message_ts, chats.last_message_ts),
+         coalesce(chats.last_message_ts, excluded.last_message_ts)
        ),
        raw_json = coalesce(excluded.raw_json, chats.raw_json),
        updated_at = excluded.updated_at`,
@@ -107,7 +109,9 @@ export function upsertChat(db: Database, input: ChatInput): void {
     name: input.name ?? null,
     pushName: input.pushName ?? null,
     isGroup: input.isGroup ? 1 : 0,
+    isGroupSet: input.isGroup === undefined ? 0 : 1,
     isStatus: input.isStatus ? 1 : 0,
+    isStatusSet: input.isStatus === undefined ? 0 : 1,
     lastMessageTs: input.lastMessageTs ?? null,
     rawJson: input.rawJson ?? null,
     now,
@@ -253,7 +257,8 @@ export function upsertMessage(db: Database, input: MessageInput): void {
        message_type = coalesce(excluded.message_type, messages.message_type),
        text = coalesce(excluded.text, messages.text),
        normalized_text = coalesce(excluded.normalized_text, messages.normalized_text),
-       has_media = excluded.has_media,
+       -- Preserve a prior has_media=1 on partial replays (revoke/edit) that omit it.
+       has_media = case when @hasMediaSet = 1 then @hasMedia else messages.has_media end,
        quoted_message_id = coalesce(excluded.quoted_message_id, messages.quoted_message_id),
        quoted_sender_jid = coalesce(excluded.quoted_sender_jid, messages.quoted_sender_jid),
        edited_message_id = coalesce(excluded.edited_message_id, messages.edited_message_id),
@@ -271,6 +276,7 @@ export function upsertMessage(db: Database, input: MessageInput): void {
     text: input.text ?? null,
     normalizedText: input.normalizedText ?? null,
     hasMedia: input.hasMedia ? 1 : 0,
+    hasMediaSet: input.hasMedia === undefined ? 0 : 1,
     quotedMessageId: input.quotedMessageId ?? null,
     quotedSenderJid: input.quotedSenderJid ?? null,
     editedMessageId: input.editedMessageId ?? null,
@@ -365,8 +371,10 @@ export function setConsumerOffset(
        consumer_name, last_seen_timestamp, last_seen_event_id, updated_at
      ) values (@name, @ts, @eventId, @now)
      on conflict (consumer_name) do update set
-       last_seen_timestamp = excluded.last_seen_timestamp,
-       last_seen_event_id = excluded.last_seen_event_id,
+       -- Advance only the cursors provided; never erase the other component
+       -- (both are needed for --since-last resume).
+       last_seen_timestamp = coalesce(excluded.last_seen_timestamp, consumer_offsets.last_seen_timestamp),
+       last_seen_event_id = coalesce(excluded.last_seen_event_id, consumer_offsets.last_seen_event_id),
        updated_at = excluded.updated_at`,
   ).run({
     name: consumerName,

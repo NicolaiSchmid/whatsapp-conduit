@@ -128,8 +128,11 @@ export function resolveConfig(
   const exportsRaw = section(raw, "exports");
   const loggingRaw = section(raw, "logging");
 
-  const dataDir =
-    options.dataDir ?? asString(pathsRaw.data_dir, defaultDataDir());
+  // Resolve to an absolute path so paths derived from it are stable regardless
+  // of the cwd a later command (e.g. a systemd service) runs from.
+  const dataDir = resolve(
+    options.dataDir ?? asString(pathsRaw.data_dir, defaultDataDir()),
+  );
 
   const paths: PathsConfig = {
     dataDir,
