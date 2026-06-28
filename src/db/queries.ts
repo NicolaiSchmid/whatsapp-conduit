@@ -49,6 +49,69 @@ export function getAccount(db: Database, id: string): AccountRow | undefined {
     .get(id);
 }
 
+export function listAccounts(db: Database): AccountRow[] {
+  return db.prepare<[], AccountRow>("select * from accounts order by id").all();
+}
+
+export function countChats(db: Database, accountId?: string): number {
+  if (accountId === undefined) {
+    return (
+      db.prepare<[], { n: number }>("select count(*) as n from chats").get()
+        ?.n ?? 0
+    );
+  }
+  return (
+    db
+      .prepare<
+        [string],
+        { n: number }
+      >("select count(*) as n from chats where account_id = ?")
+      .get(accountId)?.n ?? 0
+  );
+}
+
+export function countAllowedChats(db: Database, accountId?: string): number {
+  if (accountId === undefined) {
+    return (
+      db
+        .prepare<
+          [],
+          { n: number }
+        >("select count(*) as n from chats where is_allowed = 1")
+        .get()?.n ?? 0
+    );
+  }
+  return (
+    db
+      .prepare<
+        [string],
+        { n: number }
+      >("select count(*) as n from chats where account_id = ? and is_allowed = 1")
+      .get(accountId)?.n ?? 0
+  );
+}
+
+export function latestMessageTimestamp(
+  db: Database,
+  accountId?: string,
+): number | null {
+  const row =
+    accountId === undefined
+      ? db
+          .prepare<
+            [],
+            { ts: number | null }
+          >("select max(timestamp) as ts from messages")
+          .get()
+      : db
+          .prepare<
+            [string],
+            { ts: number | null }
+          >("select max(timestamp) as ts from messages where account_id = ?")
+          .get(accountId);
+  return row?.ts ?? null;
+}
+
 export interface ChatInput {
   accountId: string;
   jid: string;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DestinationStream } from "pino";
-import { createLogger } from "../src/util/logging.js";
+import { contentSafeLevel, createLogger } from "../src/util/logging.js";
 
 function captureLogger(logMessageText: boolean) {
   const records: Array<Record<string, unknown>> = [];
@@ -97,5 +97,20 @@ describe("createLogger redaction", () => {
     const { logger, records } = captureLogger(true);
     logger.info({ text: "secret plans" }, "msg");
     expect(records[0]?.text).toBe("secret plans");
+  });
+});
+
+describe("contentSafeLevel", () => {
+  it("caps info/debug/trace at warn while message text is disabled", () => {
+    expect(contentSafeLevel("info", false)).toBe("warn");
+    expect(contentSafeLevel("debug", false)).toBe("warn");
+    expect(contentSafeLevel("trace", false)).toBe("warn");
+    expect(contentSafeLevel("warn", false)).toBe("warn");
+    expect(contentSafeLevel("error", false)).toBe("error");
+  });
+
+  it("respects the requested level when message text is enabled", () => {
+    expect(contentSafeLevel("debug", true)).toBe("debug");
+    expect(contentSafeLevel("info", true)).toBe("info");
   });
 });

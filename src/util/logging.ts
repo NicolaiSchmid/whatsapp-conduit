@@ -16,6 +16,23 @@ export const LOG_LEVELS = [
   "trace",
 ] as const satisfies readonly LogLevel[];
 
+/**
+ * Clamp a log level so it is no more verbose than `warn` unless message text is
+ * explicitly allowed. Baileys' own logger emits sensitive material below `warn`:
+ * decrypted message content at `debug`/`trace`, and handshake / device-pairing
+ * key material at `info`. Its logger must therefore stay at `warn`+ while
+ * `log_message_text` is false. (This applies only to the Baileys logger; the
+ * application logger uses the configured level directly.)
+ */
+export function contentSafeLevel(
+  level: LogLevel,
+  logMessageText: boolean,
+): LogLevel {
+  if (logMessageText) return level;
+  const tooVerbose = new Set<LogLevel>(["info", "debug", "trace"]);
+  return tooVerbose.has(level) ? "warn" : level;
+}
+
 export interface LoggerConfig {
   level?: LogLevel;
   /**
