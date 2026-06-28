@@ -5,6 +5,9 @@ import { Command } from "commander";
 import { runDbCheck, runDbMigrate } from "./commands/db.js";
 import { runDoctor } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
+import { runLink } from "./commands/link.js";
+import { runRun } from "./commands/run.js";
+import { runStatus } from "./commands/status.js";
 import { getVersion } from "./version.js";
 
 export interface GlobalOptions {
@@ -50,6 +53,39 @@ export function buildProgram(): Command {
         force: opts.force,
         json: opts.json,
       });
+    });
+
+  program
+    .command("link")
+    .description("link a WhatsApp account as a secondary device via QR code")
+    .option(
+      "--timeout <seconds>",
+      "seconds to wait for pairing before giving up",
+      "120",
+    )
+    .action(async (opts: { timeout?: string }) => {
+      const globals = program.opts<GlobalOptions>();
+      await runLink({
+        configPath: globals.config,
+        timeoutSec: opts.timeout ? Number(opts.timeout) : undefined,
+      });
+    });
+
+  program
+    .command("run")
+    .description("run the foreground observe-only sync daemon")
+    .action(async () => {
+      const globals = program.opts<GlobalOptions>();
+      await runRun({ configPath: globals.config });
+    });
+
+  program
+    .command("status")
+    .description("show auth, account, and sync state")
+    .option("--json", "emit machine-readable JSON")
+    .action((opts: { json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      runStatus({ configPath: globals.config, json: opts.json });
     });
 
   const db = program.command("db").description("database maintenance commands");
