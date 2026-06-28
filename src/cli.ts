@@ -2,7 +2,9 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { runDbCheck, runDbMigrate } from "./commands/db.js";
 import { runDoctor } from "./commands/doctor.js";
+import { runInit } from "./commands/init.js";
 import { getVersion } from "./version.js";
 
 export interface GlobalOptions {
@@ -32,6 +34,41 @@ export function buildProgram(): Command {
     .action((opts: { json?: boolean }) => {
       const globals = program.opts<GlobalOptions>();
       runDoctor({ configPath: globals.config, json: opts.json });
+    });
+
+  program
+    .command("init")
+    .description("create config, data directories, and the SQLite database")
+    .option("--data-dir <path>", "override the data directory")
+    .option("--force", "overwrite an existing config file with defaults")
+    .option("--json", "emit machine-readable JSON")
+    .action((opts: { dataDir?: string; force?: boolean; json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      runInit({
+        configPath: globals.config,
+        dataDir: opts.dataDir,
+        force: opts.force,
+        json: opts.json,
+      });
+    });
+
+  const db = program.command("db").description("database maintenance commands");
+
+  db.command("migrate")
+    .description("apply pending schema migrations")
+    .option("--json", "emit machine-readable JSON")
+    .action((opts: { json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      runDbMigrate({ configPath: globals.config, json: opts.json });
+    });
+
+  db.command("check")
+    .description("validate schema integrity and migration state")
+    .option("--json", "emit machine-readable JSON")
+    .action((opts: { json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      const code = runDbCheck({ configPath: globals.config, json: opts.json });
+      process.exitCode = code;
     });
 
   return program;
