@@ -2,13 +2,30 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import {
+  runChatsAllow,
+  runChatsBlock,
+  runChatsList,
+  runChatsShow,
+} from "./commands/chats.js";
 import { runDbCheck, runDbMigrate } from "./commands/db.js";
 import { runDoctor } from "./commands/doctor.js";
+import { runExport } from "./commands/export.js";
 import { runInit } from "./commands/init.js";
 import { runLink } from "./commands/link.js";
+import { runMessagesList } from "./commands/messages.js";
+import { runOffsetsCommit, runOffsetsShow } from "./commands/offsets.js";
 import { runRun } from "./commands/run.js";
 import { runStatus } from "./commands/status.js";
 import { getVersion } from "./version.js";
+
+function parsePositiveInt(name: string, value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`${name} must be a non-negative integer (got "${value}").`);
+  }
+  return n;
+}
 
 export interface GlobalOptions {
   config?: string;
@@ -86,6 +103,165 @@ export function buildProgram(): Command {
     .action((opts: { json?: boolean }) => {
       const globals = program.opts<GlobalOptions>();
       runStatus({ configPath: globals.config, json: opts.json });
+    });
+
+  const chats = program
+    .command("chats")
+    .description("inspect and manage discovered chats");
+
+  chats
+    .command("list")
+    .description("list discovered chats")
+    .option("--json", "emit machine-readable JSON")
+    .option("--allowed-only", "only chats marked allowed")
+    .option("--limit <n>", "maximum chats to show")
+    .action(
+      (opts: { json?: boolean; allowedOnly?: boolean; limit?: string }) => {
+        const globals = program.opts<GlobalOptions>();
+        runChatsList({
+          configPath: globals.config,
+          json: opts.json,
+          allowedOnly: opts.allowedOnly,
+          limit: opts.limit
+            ? parsePositiveInt("--limit", opts.limit)
+            : undefined,
+        });
+      },
+    );
+
+  chats
+    .command("show <jid>")
+    .description("show one chat's metadata")
+    .option("--json", "emit machine-readable JSON")
+    .action((jid: string, opts: { json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      process.exitCode = runChatsShow(jid, {
+        configPath: globals.config,
+        json: opts.json,
+      });
+    });
+
+  chats
+    .command("allow <jid>")
+    .description("mark a chat as allowed for exports")
+    .action((jid: string) => {
+      const globals = program.opts<GlobalOptions>();
+      process.exitCode = runChatsAllow(jid, { configPath: globals.config });
+    });
+
+  chats
+    .command("block <jid>")
+    .description("mark a chat as blocked (excluded from sync and exports)")
+    .action((jid: string) => {
+      const globals = program.opts<GlobalOptions>();
+      process.exitCode = runChatsBlock(jid, { configPath: globals.config });
+    });
+
+  const messages = program
+    .command("messages")
+    .description("inspect stored messages");
+
+  messages
+    .command("list")
+    .description("list recent stored messages")
+    .option("--chat <jid>", "restrict to one chat")
+    .option("--since <when>", "only messages at/after a duration or ISO time")
+    .option("--limit <n>", "maximum messages to show", "50")
+    .option("--json", "emit machine-readable JSON")
+    .action(
+      (opts: {
+        chat?: string;
+        since?: string;
+        limit?: string;
+        json?: boolean;
+      }) => {
+        const globals = program.opts<GlobalOptions>();
+        runMessagesList({
+          configPath: globals.config,
+          chat: opts.chat,
+          since: opts.since,
+          limit: opts.limit
+            ? parsePositiveInt("--limit", opts.limit)
+            : undefined,
+          json: opts.json,
+        });
+      },
+    );
+
+  program
+    .command("export")
+    .description("emit messages as JSONL for downstream consumers")
+    .option("--since <when>", "only messages at/after a duration or ISO time")
+    .option(
+      "--since-last <consumer>",
+      "resume after a consumer's stored offset",
+    )
+    .option("--allowed-only", "only messages from allowed chats")
+    .option("--redact-phone-numbers", "redact phone numbers in JIDs")
+    .option("--include-raw-json", "include the raw Baileys payload")
+    .option("--limit <n>", "maximum messages to export")
+    .option("--commit", "advance the --since-last offset after exporting")
+    .action(
+      (opts: {
+        since?: string;
+        sinceLast?: string;
+        allowedOnly?: boolean;
+        redactPhoneNumbers?: boolean;
+        includeRawJson?: boolean;
+        limit?: string;
+        commit?: boolean;
+      }) => {
+        const globals = program.opts<GlobalOptions>();
+        runExport({
+          configPath: globals.config,
+          since: opts.since,
+          sinceLast: opts.sinceLast,
+          allowedOnly: opts.allowedOnly,
+          redactPhoneNumbers: opts.redactPhoneNumbers,
+          includeRawJson: opts.includeRawJson,
+          limit: opts.limit
+            ? parsePositiveInt("--limit", opts.limit)
+            : undefined,
+          commit: opts.commit,
+        });
+      },
+    );
+
+  const offsets = program
+    .command("offsets")
+    .description("manage downstream consumer offsets");
+
+  offsets
+    .command("commit <consumer>")
+    .description("advance a consumer offset to a cursor from a prior export")
+    .requiredOption(
+      "--through <cursor>",
+      "cursor (from export output) to commit",
+    )
+    .option("--timestamp <ts>", "optional epoch-seconds timestamp to record")
+    .action(
+      (consumer: string, opts: { through: string; timestamp?: string }) => {
+        const globals = program.opts<GlobalOptions>();
+        runOffsetsCommit(consumer, {
+          configPath: globals.config,
+          through: parsePositiveInt("--through", opts.through),
+          timestamp: opts.timestamp
+            ? parsePositiveInt("--timestamp", opts.timestamp)
+            : undefined,
+        });
+      },
+    );
+
+  offsets
+    .command("show <consumer>")
+    .description("show a consumer's stored offset")
+    .option("--json", "emit machine-readable JSON")
+    .action((consumer: string, opts: { json?: boolean }) => {
+      const globals = program.opts<GlobalOptions>();
+      process.exitCode = runOffsetsShow(consumer, {
+        configPath: globals.config,
+        json: opts.json,
+      });
     });
 
   const db = program.command("db").description("database maintenance commands");
