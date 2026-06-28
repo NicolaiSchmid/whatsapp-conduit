@@ -1,0 +1,7 @@
+dist/
+node_modules/
+coverage/
+pnpm-lock.yaml
+
+# Markdown is hand-authored (tables, ASCII diagrams) — don't reflow it.
+*.md

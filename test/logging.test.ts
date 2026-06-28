@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import type { DestinationStream } from "pino";
+import { createLogger } from "../src/util/logging.js";
+
+function captureLogger(logMessageText: boolean) {
+  const records: Array<Record<string, unknown>> = [];
+  const stream: DestinationStream = {
+    write(chunk: string) {
+      records.push(JSON.parse(chunk) as Record<string, unknown>);
+    },
+  };
+  const logger = createLogger({ level: "info", logMessageText }, stream);
+  return { logger, records };
+}
+
+describe("createLogger redaction", () => {
+  it("redacts message-text fields by default", () => {
+    const { logger, records } = captureLogger(false);
+    logger.info({ chatJid: "123@s.whatsapp.net", text: "secret plans" }, "msg");
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.text).toBe("[redacted]");
+    expect(records[0]?.chatJid).toBe("123@s.whatsapp.net");
+  });
+
+  it("redacts nested caption/body/conversation fields", () => {
+    const { logger, records } = captureLogger(false);
+    logger.info({ payload: { caption: "hi", body: "yo" } }, "nested");
+
+    const payload = records[0]?.payload as Record<string, unknown>;
+    expect(payload.caption).toBe("[redacted]");
+    expect(payload.body).toBe("[redacted]");
+  });
+
+  it("retains message text only when explicitly enabled", () => {
+    const { logger, records } = captureLogger(true);
+    logger.info({ text: "secret plans" }, "msg");
+    expect(records[0]?.text).toBe("secret plans");
+  });
+});

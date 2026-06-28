@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Test / coverage
+coverage/
+.vitest/
+
+# Logs
+*.log
+
+# Sensitive runtime state — never commit (see AGENTS.md / README privacy model)
+auth/
+media/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+whatsapp-conduit.db*
+config.yaml
+config.yml
+config.local.yaml
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
