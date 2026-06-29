@@ -1,6 +1,5 @@
 import {
   DisconnectReason,
-  fetchLatestBaileysVersion,
   jidNormalizedUser,
   type ConnectionState,
 } from "baileys";
@@ -100,11 +99,12 @@ export class ConduitConnection {
   private readonly mode: ConnectionMode;
   private readonly handlers: ConnectionHandlers;
   private readonly socketFactory: SocketFactory;
-  private readonly fetchVersion: () => Promise<WAVersion>;
+  private readonly fetchVersion?: () => Promise<WAVersion>;
   private readonly reconnectDelayMs: number;
 
   private sock?: WASocket;
   private version?: WAVersion;
+  private started = false;
   private stopped = false;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
 
@@ -115,23 +115,22 @@ export class ConduitConnection {
     this.mode = deps.mode;
     this.handlers = deps.handlers;
     this.socketFactory = deps.socketFactory ?? createSocket;
-    this.fetchVersion =
-      deps.fetchVersion ??
-      (async () => {
-        const { version } = await fetchLatestBaileysVersion();
-        return version as WAVersion;
-      });
+    // No default version fetch: leaving `version` undefined makes Baileys use
+    // the protocol version it was built against, which is safer than tracking
+    // the latest WA Web version (it can advance ahead of the pinned protobufs).
+    this.fetchVersion = deps.fetchVersion;
     this.reconnectDelayMs = deps.reconnectDelayMs ?? 3000;
   }
 
-  /** Resolve the WA version once, then open the first socket. */
+  /** Resolve the WA version (if a resolver was provided), then open the socket. */
   async start(): Promise<void> {
-    this.version = await this.fetchVersion();
+    if (this.fetchVersion) this.version = await this.fetchVersion();
+    this.started = true;
     this.spawn();
   }
 
   private spawn(): void {
-    if (this.stopped || this.version === undefined) return;
+    if (this.stopped || !this.started) return;
 
     const socketConfig = buildSocketConfig({
       config: this.config,

@@ -40,6 +40,15 @@ export async function runLink(options: LinkOptions = {}): Promise<LinkResult> {
       mode: "link",
       handlers: {
         onQr(qr) {
+          if (!config.baileys.printQrInTerminal) {
+            // The QR payload is a live pairing token; honor the operator's
+            // choice to keep it out of (possibly captured) stdout.
+            log.warn(
+              "a QR code is available but baileys.print_qr_in_terminal is false; " +
+                "enable it to display the code and link a device",
+            );
+            return;
+          }
           process.stdout.write(
             "\nScan this QR code in WhatsApp → Settings → Linked Devices → Link a device:\n\n",
           );

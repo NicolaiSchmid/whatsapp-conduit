@@ -38,6 +38,15 @@ describe("buildSocketConfig observe-only invariants", () => {
     expect(cfg.shouldSyncHistoryMessage).toBeUndefined();
   });
 
+  it("omits version when not provided (uses Baileys' bundled version)", () => {
+    const cfg = buildSocketConfig({
+      config: resolveConfig({}, { dataDir: "/data" }),
+      authState: fakeAuthState(),
+      logger: createLogger({ level: "error" }),
+    });
+    expect(cfg.version).toBeUndefined();
+  });
+
   it("getMessage is a no-op (no resend support)", async () => {
     const cfg = build(resolveConfig({}, { dataDir: "/data" }));
     const result = await cfg.getMessage?.({} as never);
