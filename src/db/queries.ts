@@ -466,6 +466,8 @@ export function selectExportMessages(
     where.push("m.rowid > @afterRowid");
     params.afterRowid = sel.afterRowid;
   }
+  // Chats blocked via `chats block` are never exported, regardless of options.
+  where.push("c.is_blocked = 0");
   if (sel.allowedOnly) {
     const allow = sel.allowedChats ?? [];
     const placeholders = allow.map((_, i) => `@ac${i}`);

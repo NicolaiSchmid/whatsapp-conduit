@@ -9,6 +9,7 @@ import { openDb } from "../src/db/index.js";
 import {
   getConsumerOffset,
   setChatAllowed,
+  setChatBlocked,
   upsertAccount,
   upsertChat,
   upsertMessage,
@@ -73,9 +74,17 @@ function records(): ExportRecord[] {
 }
 
 describe("runExport", () => {
-  it("emits all messages as JSONL in ascending cursor order", () => {
+  it("defaults to allowed-only (does not leak non-allowed chats)", () => {
     seed();
     const result = runExport({ configPath });
+    expect(result.count).toBe(3);
+    const recs = records();
+    expect(recs.every((r) => r.chat_jid === "a@s.whatsapp.net")).toBe(true);
+  });
+
+  it("--all includes non-allowed chats, in ascending cursor order", () => {
+    seed();
+    const result = runExport({ configPath, all: true });
     expect(result.count).toBe(4);
     const recs = records();
     expect(recs.map((r) => r.message_id)).toEqual(["A1", "A2", "A3", "B1"]);
@@ -84,12 +93,16 @@ describe("runExport", () => {
     );
   });
 
-  it("--allowed-only excludes non-allowed chats", () => {
+  it("never exports a chat blocked via the DB flag, even with --all", () => {
     seed();
-    runExport({ configPath, allowedOnly: true });
+    const config = loadConfig(configPath);
+    const db = openDb(config.paths.sqlite);
+    setChatBlocked(db, config.account.name, "b@s.whatsapp.net", true);
+    db.close();
+
+    runExport({ configPath, all: true });
     const recs = records();
-    expect(recs).toHaveLength(3);
-    expect(recs.every((r) => r.chat_jid === "a@s.whatsapp.net")).toBe(true);
+    expect(recs.every((r) => r.chat_jid !== "b@s.whatsapp.net")).toBe(true);
   });
 
   it("--redact-phone-numbers redacts sender JIDs", () => {
@@ -101,9 +114,16 @@ describe("runExport", () => {
     expect(JSON.stringify(recs)).not.toContain("49123@s.whatsapp.net");
   });
 
+  it("rejects --redact-phone-numbers combined with --include-raw-json", () => {
+    seed();
+    expect(() =>
+      runExport({ configPath, redactPhoneNumbers: true, includeRawJson: true }),
+    ).toThrow(/raw/i);
+  });
+
   it("two-phase: --since-last does not advance offset without --commit", () => {
     seed();
-    const first = runExport({ configPath, sinceLast: "hermes" });
+    const first = runExport({ configPath, sinceLast: "hermes", all: true });
     expect(first.count).toBe(4);
     expect(first.committed).toBe(false);
 
@@ -115,12 +135,22 @@ describe("runExport", () => {
 
   it("--since-last --commit advances the offset and resumes after it", () => {
     seed();
-    const first = runExport({ configPath, sinceLast: "hermes", commit: true });
+    const first = runExport({
+      configPath,
+      sinceLast: "hermes",
+      all: true,
+      commit: true,
+    });
     expect(first.count).toBe(4);
     expect(first.committed).toBe(true);
 
     stdout = [];
-    const second = runExport({ configPath, sinceLast: "hermes", commit: true });
+    const second = runExport({
+      configPath,
+      sinceLast: "hermes",
+      all: true,
+      commit: true,
+    });
     expect(second.count).toBe(0);
   });
 });

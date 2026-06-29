@@ -201,7 +201,8 @@ export function buildProgram(): Command {
       "--since-last <consumer>",
       "resume after a consumer's stored offset",
     )
-    .option("--allowed-only", "only messages from allowed chats")
+    .option("--all", "include non-allowed chats (default: allowed chats only)")
+    .option("--format <format>", "output format (only 'jsonl')", "jsonl")
     .option("--redact-phone-numbers", "redact phone numbers in JIDs")
     .option("--include-raw-json", "include the raw Baileys payload")
     .option("--limit <n>", "maximum messages to export")
@@ -210,18 +211,24 @@ export function buildProgram(): Command {
       (opts: {
         since?: string;
         sinceLast?: string;
-        allowedOnly?: boolean;
+        all?: boolean;
+        format?: string;
         redactPhoneNumbers?: boolean;
         includeRawJson?: boolean;
         limit?: string;
         commit?: boolean;
       }) => {
+        if (opts.format !== undefined && opts.format !== "jsonl") {
+          throw new Error(
+            `Unsupported --format "${opts.format}". Only "jsonl" is supported.`,
+          );
+        }
         const globals = program.opts<GlobalOptions>();
         runExport({
           configPath: globals.config,
           since: opts.since,
           sinceLast: opts.sinceLast,
-          allowedOnly: opts.allowedOnly,
+          all: opts.all,
           redactPhoneNumbers: opts.redactPhoneNumbers,
           includeRawJson: opts.includeRawJson,
           limit: opts.limit

@@ -6,7 +6,7 @@ import {
   setConsumerOffset,
   type ExportRow,
 } from "../db/queries.js";
-import { redactJid } from "../privacy/redact.js";
+import { loadRedactionSalt, redactJid } from "../privacy/redact.js";
 import { resolveConfigPath } from "../runtime.js";
 import { parseSinceSec } from "../util/time.js";
 
@@ -14,7 +14,12 @@ export interface ExportOptions {
   configPath?: string;
   since?: string;
   sinceLast?: string;
-  allowedOnly?: boolean;
+  /**
+   * Export every chat, including ones not marked allowed. Defaults false:
+   * exports are allowed-only by default so newly discovered chats are not
+   * leaked to downstream consumers.
+   */
+  all?: boolean;
   redactPhoneNumbers?: boolean;
   includeRawJson?: boolean;
   limit?: number;
@@ -47,13 +52,16 @@ export interface ExportRecord {
 export interface ExportConfig {
   redactPhoneNumbers: boolean;
   includeRawJson: boolean;
+  /** Per-install secret salt for redaction tokens (HMAC key). */
+  salt: string;
 }
 
 export function toExportRecord(
   row: ExportRow,
   cfg: ExportConfig,
 ): ExportRecord {
-  const jid = (j: string | null) => (cfg.redactPhoneNumbers ? redactJid(j) : j);
+  const jid = (j: string | null) =>
+    cfg.redactPhoneNumbers ? redactJid(j, cfg.salt) : j;
   const record: ExportRecord = {
     account_id: row.account_id,
     chat_jid: jid(row.chat_jid) ?? row.chat_jid,
@@ -88,20 +96,47 @@ export interface ExportResult {
 }
 
 /**
- * Emit allowed/selected messages as deterministic JSONL on stdout. For
- * `--since-last`, resumes after the consumer's stored cursor; the offset is
- * advanced only with `--commit` (two-phase by default), keeping the export
- * idempotent until the consumer confirms receipt.
+ * Emit allowed/selected messages as deterministic JSONL on stdout.
+ *
+ * - Allowed-only by default (pass `all` to include non-allowed chats); blocked
+ *   chats are never exported.
+ * - For `--since-last`, resumes after the consumer's stored cursor; the offset
+ *   is advanced only with `--commit` (two-phase by default), and only after
+ *   stdout accepted every line, so a consumer that exits early (EPIPE) can't
+ *   skip messages on the next run.
  */
 export function runExport(options: ExportOptions = {}): ExportResult {
   const config = loadConfig(resolveConfigPath(options.configPath));
   const sinceTs =
     options.since !== undefined ? parseSinceSec(options.since) : null;
 
+  const redactPhoneNumbers =
+    options.redactPhoneNumbers ?? config.exports.redactPhoneNumbers;
+  const includeRawJson =
+    options.includeRawJson ?? config.exports.includeRawJson;
+  // The raw payload carries un-redacted JIDs (key.remoteJid, participant), so
+  // redaction + raw together would silently leak the numbers. Refuse the combo.
+  if (redactPhoneNumbers && includeRawJson) {
+    throw new Error(
+      "--redact-phone-numbers cannot be combined with --include-raw-json: " +
+        "the raw payload contains un-redacted phone JIDs.",
+    );
+  }
+
+  // Allowed-only is the default privacy posture; --all opts out.
+  const allowedOnly = !options.all;
+
   const db = openDb(config.paths.sqlite, {
     migrate: false,
     readonly: !options.commit,
   });
+
+  let stdoutFailed = false;
+  const onStdoutError = (): void => {
+    stdoutFailed = true;
+  };
+  process.stdout.on("error", onStdoutError);
+
   try {
     let afterRowid: number | null = null;
     if (options.sinceLast) {
@@ -113,29 +148,38 @@ export function runExport(options: ExportOptions = {}): ExportResult {
       accountId: config.account.name,
       sinceTs,
       afterRowid,
-      allowedOnly: options.allowedOnly,
+      allowedOnly,
       allowedChats: config.filters.allowedChats,
       limit: options.limit,
     });
 
     const recordCfg: ExportConfig = {
-      redactPhoneNumbers:
-        options.redactPhoneNumbers ?? config.exports.redactPhoneNumbers,
-      includeRawJson: options.includeRawJson ?? config.exports.includeRawJson,
+      redactPhoneNumbers,
+      includeRawJson,
+      salt: redactPhoneNumbers ? loadRedactionSalt(config.paths.dataDir) : "",
     };
 
     let lastCursor: number | null = null;
     let lastTs: number | null = null;
     for (const row of rows) {
-      process.stdout.write(
+      const ok = process.stdout.write(
         `${JSON.stringify(toExportRecord(row, recordCfg))}\n`,
       );
+      if (!ok || stdoutFailed) {
+        // Backpressure/EPIPE: stop and do not advance the offset.
+        stdoutFailed = stdoutFailed || !ok;
+      }
       lastCursor = row.export_rowid;
       lastTs = row.timestamp;
     }
 
     let committed = false;
-    if (options.commit && options.sinceLast && lastCursor !== null) {
+    if (
+      options.commit &&
+      options.sinceLast &&
+      lastCursor !== null &&
+      !stdoutFailed
+    ) {
       setConsumerOffset(db, options.sinceLast, {
         lastSeenEventId: lastCursor,
         lastSeenTimestamp: lastTs,
@@ -144,9 +188,12 @@ export function runExport(options: ExportOptions = {}): ExportResult {
     }
 
     if (options.sinceLast && !committed && lastCursor !== null) {
+      const configFlag = options.configPath
+        ? `--config ${options.configPath} `
+        : "";
       process.stderr.write(
         `Exported ${rows.length} message(s). To advance the offset, run:\n` +
-          `  whatsapp-conduit offsets commit ${options.sinceLast} --through ${lastCursor}\n`,
+          `  whatsapp-conduit ${configFlag}offsets commit ${options.sinceLast} --through ${lastCursor}\n`,
       );
     }
 
@@ -158,6 +205,7 @@ export function runExport(options: ExportOptions = {}): ExportResult {
     if (options.sinceLast) result.consumer = options.sinceLast;
     return result;
   } finally {
+    process.stdout.off("error", onStdoutError);
     db.close();
   }
 }
