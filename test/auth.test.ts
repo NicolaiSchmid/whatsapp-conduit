@@ -25,11 +25,26 @@ describe("openAuthState permissions", () => {
     expect(statSync(join(authDir, "creds.json")).mode & 0o777).toBe(0o600);
   });
 
-  it("detects an existing session via creds.json", async () => {
+  it("treats only a registered creds.json as a linked session", async () => {
     const authDir = join(dir, "auth");
     await openAuthState(authDir);
+    const creds = join(authDir, "creds.json");
+
     expect(authStateExists(authDir)).toBe(false);
-    writeFileSync(join(authDir, "creds.json"), "{}");
+    // Aborted/stale auth: file present but not yet registered.
+    writeFileSync(creds, JSON.stringify({ registered: false }));
+    expect(authStateExists(authDir)).toBe(false);
+    // Malformed creds are not a session either.
+    writeFileSync(creds, "not json");
+    expect(authStateExists(authDir)).toBe(false);
+    // Completed pairing.
+    writeFileSync(
+      creds,
+      JSON.stringify({
+        registered: true,
+        me: { id: "49123:1@s.whatsapp.net" },
+      }),
+    );
     expect(authStateExists(authDir)).toBe(true);
   });
 });
