@@ -17,15 +17,15 @@ export function appLogger(config: Config): Logger {
 }
 
 /**
- * Logger handed to Baileys. Level is clamped to `info`+ unless message text is
- * explicitly enabled, so Baileys' own debug logging cannot leak content.
+ * Logger handed to Baileys. Always clamped to `warn`+ and always redacted,
+ * independent of `logging.log_message_text`: Baileys emits decrypted message
+ * content at debug/trace AND handshake/device-pairing **key material** at info,
+ * so enabling app-level message-text logging must never unmask Baileys' auth
+ * secrets. Message text we want is captured via storage, not Baileys logs.
  */
 export function baileysLogger(config: Config): Logger {
   return createLogger({
-    level: contentSafeLevel(
-      config.logging.level,
-      config.logging.logMessageText,
-    ),
-    logMessageText: config.logging.logMessageText,
+    level: contentSafeLevel(config.logging.level, false),
+    logMessageText: false,
   });
 }

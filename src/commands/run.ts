@@ -20,6 +20,15 @@ export interface RunOptions {
 export async function runRun(options: RunOptions = {}): Promise<void> {
   const config = loadConfig(resolveConfigPath(options.configPath));
   const log = appLogger(config);
+
+  // Refuse to start unpaired: `run` has no QR handler, so opening a fresh auth
+  // state would spin in an unrecoverable pairing/reconnect loop. Require link.
+  if (!authStateExists(config.paths.authDir)) {
+    throw new Error(
+      "No linked device found. Run `whatsapp-conduit link` before `run`.",
+    );
+  }
+
   const db = openDb(config.paths.sqlite, { migrate: true });
 
   upsertAccount(db, {
@@ -27,11 +36,6 @@ export async function runRun(options: RunOptions = {}): Promise<void> {
     label: config.account.description ?? null,
   });
 
-  if (!authStateExists(config.paths.authDir)) {
-    log.warn(
-      "no auth state found — run `whatsapp-conduit link` before `run` to pair a device",
-    );
-  }
   const authState = await openAuthState(config.paths.authDir);
 
   log.info(
