@@ -45,17 +45,26 @@ export function chatAllowedAtSync(
 /**
  * Decide whether a sender is permitted. Blocked senders are always excluded;
  * if a non-empty `allowed_senders` allowlist is configured, only those senders
- * pass. A null sender (unknown) is permitted — the chat filter already applied.
+ * pass.
+ *
+ * A null (unknown) sender — e.g. our own outgoing messages, whose sender JID is
+ * not recorded — fails **closed** when an allowlist is configured: it cannot be
+ * confirmed to be in the allowlist, and a sender allowlist is a privacy control.
+ * With no allowlist, a null sender is permitted (the chat filter already ran).
  */
 export function senderAllowedAtSync(
   config: Config,
   senderJid: string | null,
 ): FilterDecision {
-  if (!senderJid) return { store: true };
+  const allow = config.filters.allowedSenders;
+  if (!senderJid) {
+    return allow.length > 0
+      ? { store: false, reason: "sender-unknown" }
+      : { store: true };
+  }
   if (config.filters.blockedSenders.includes(senderJid)) {
     return { store: false, reason: "sender-blocked" };
   }
-  const allow = config.filters.allowedSenders;
   if (allow.length > 0 && !allow.includes(senderJid)) {
     return { store: false, reason: "sender-not-in-allowlist" };
   }

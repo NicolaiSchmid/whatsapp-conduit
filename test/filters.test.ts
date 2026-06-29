@@ -82,8 +82,15 @@ describe("chatAllowedAtSync", () => {
 });
 
 describe("senderAllowedAtSync", () => {
-  it("permits a null (unknown) sender", () => {
+  it("permits a null (unknown) sender when no allowlist is set", () => {
     expect(senderAllowedAtSync(cfg(), null).store).toBe(true);
+  });
+
+  it("fails closed for a null sender when an allowlist is configured", () => {
+    const c = cfg({ filters: { allowed_senders: ["a@s.whatsapp.net"] } });
+    const d = senderAllowedAtSync(c, null);
+    expect(d.store).toBe(false);
+    expect(d.reason).toBe("sender-unknown");
   });
 
   it("blocks listed senders and honors an allowlist", () => {

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { proto, type WAMessage } from "baileys";
 import { resolveConfig, type Config } from "../src/config.js";
-import { ingestMessage, type IngestDeps } from "../src/baileys/ingest.js";
+import {
+  ingestMessage,
+  ingestReaction,
+  type IngestDeps,
+} from "../src/baileys/ingest.js";
 import { openDb } from "../src/db/index.js";
 import {
   countMessages,
   getChat,
   getMessage,
+  setChatBlocked,
   upsertAccount,
 } from "../src/db/queries.js";
 import { createLogger } from "../src/util/logging.js";
@@ -141,6 +146,77 @@ describe("ingestMessage persistence", () => {
     expect(row?.deleted_at).not.toBeNull();
     // Original text is preserved as a tombstone record.
     expect(row?.text).toBe("will be deleted");
+    d.db.close();
+  });
+
+  it("honors a chat blocked via `chats block` (DB flag) at sync", () => {
+    const d = deps(baseConfig);
+    // Discover the chat, then block it via the DB policy flag.
+    ingestMessage(d, msg({ message: { conversation: "first" } }));
+    expect(countMessages(d.db)).toBe(1);
+    setChatBlocked(d.db, "personal", "c@s.whatsapp.net", true);
+
+    ingestMessage(
+      d,
+      msg({
+        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "M2" },
+        message: { conversation: "after block" },
+      }),
+    );
+    expect(
+      getMessage(d.db, "personal", "c@s.whatsapp.net", "M2"),
+    ).toBeUndefined();
+    d.db.close();
+  });
+
+  it("ingests a reaction from the messages.reaction event", () => {
+    const d = deps(baseConfig);
+    ingestMessage(d, msg({ message: { conversation: "react to me" } }));
+    ingestReaction(
+      d,
+      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "M1" },
+      {
+        text: "🔥",
+        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "RXN" },
+      },
+    );
+    const r = getMessage(d.db, "personal", "c@s.whatsapp.net", "RXN");
+    expect(r?.message_type).toBe("reaction");
+    expect(r?.text).toBe("🔥");
+    expect(r?.quoted_message_id).toBe("M1");
+    d.db.close();
+  });
+
+  it("applies the sender filter to edits (blocked sender can't edit)", () => {
+    const d = deps(
+      resolveConfig(
+        {
+          privacy: { include_groups: true },
+          filters: { blocked_senders: ["49bad@s.whatsapp.net"] },
+        },
+        { dataDir: "/data" },
+      ),
+    );
+    // Edit from a blocked group participant must not write text.
+    ingestMessage(
+      d,
+      msg({
+        key: {
+          remoteJid: "g@g.us",
+          fromMe: false,
+          id: "EVT",
+          participant: "49bad@s.whatsapp.net",
+        },
+        message: {
+          protocolMessage: {
+            type: proto.Message.ProtocolMessage.Type.MESSAGE_EDIT,
+            key: { id: "ORIG" },
+            editedMessage: { conversation: "sneaky edit" },
+          },
+        },
+      }),
+    );
+    expect(getMessage(d.db, "personal", "g@g.us", "ORIG")).toBeUndefined();
     d.db.close();
   });
 
