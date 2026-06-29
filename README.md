@@ -1118,21 +1118,32 @@ Baileys itself is MIT-licensed. If this project remains a small utility intended
 ## Status
 
 MVP implemented. The observe-only bridge links a WhatsApp account, ingests and
-normalizes messages into SQLite idempotently, applies chat allow/block filters,
-and exposes CLI inspection plus deterministic JSONL exports with resumable
-consumer offsets. A systemd user service wraps the daemon.
+normalizes messages into SQLite idempotently, applies chat allow/block filters
+(both config-file lists and the `chats allow`/`chats block` DB flags, enforced
+at sync and export), and exposes CLI inspection plus deterministic JSONL exports
+with resumable consumer offsets. A systemd user service wraps the daemon.
 
-Quickstart:
+Quickstart (from a fresh clone):
 
 ```bash
-pnpm install && pnpm build
+pnpm install
+pnpm build
+
+# Option A — link the bin onto your PATH, then use `whatsapp-conduit`:
+pnpm link --global
 whatsapp-conduit init
 whatsapp-conduit link
 whatsapp-conduit run
+
+# Option B — invoke the built CLI directly without a global link:
+node dist/cli.js init
+node dist/cli.js link
+node dist/cli.js run
 ```
 
 See [`docs/operations.md`](docs/operations.md),
-[`docs/security.md`](docs/security.md), and [`docs/schema.md`](docs/schema.md).
+[`docs/security.md`](docs/security.md), and [`docs/schema.md`](docs/schema.md)
+(shipped in the published package).
 
 Implemented commands: `doctor`, `init`, `link`, `run`, `status`,
 `chats list|show|allow|block`, `messages list`, `export`,

@@ -12,6 +12,7 @@
     "dist",
     "migrations",
     "systemd",
+    "docs",
     "README.md",
     "LICENSE"
   ],
