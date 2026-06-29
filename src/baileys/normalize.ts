@@ -47,6 +47,7 @@ export type NormalizeResult =
       action: "revoke";
       chatJid: string;
       targetId: string;
+      senderJid: string | null;
       isGroup: boolean;
       isStatus: boolean;
     }
@@ -56,6 +57,7 @@ export type NormalizeResult =
       targetId: string;
       text: string | null;
       editId: string;
+      senderJid: string | null;
       isGroup: boolean;
       isStatus: boolean;
     }
@@ -97,7 +99,16 @@ const CONTENT_TYPE_MAP: Partial<Record<string, MessageType>> = {
   pollCreationMessage: "poll",
   pollCreationMessageV2: "poll",
   pollCreationMessageV3: "poll",
+  pollCreationMessageV4: "poll",
+  pollCreationMessageV5: "poll",
 };
+
+/** Content types whose `.name` field holds the poll question. */
+const POLL_CONTENT_TYPES = new Set(
+  Object.keys(CONTENT_TYPE_MAP).filter((k) =>
+    k.startsWith("pollCreationMessage"),
+  ),
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -136,11 +147,10 @@ function extractText(contentType: string, node: unknown): string | null {
     case "videoMessage":
     case "documentMessage":
       return typeof node.caption === "string" ? node.caption : null;
-    case "pollCreationMessage":
-    case "pollCreationMessageV2":
-    case "pollCreationMessageV3":
-      return typeof node.name === "string" ? node.name : null;
     default:
+      if (POLL_CONTENT_TYPES.has(contentType)) {
+        return typeof node.name === "string" ? node.name : null;
+      }
       return null;
   }
 }
@@ -194,7 +204,15 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
 
   // Protocol messages: revocations and edits target another message.
   if (contentType === "protocolMessage" && isRecord(node)) {
-    return normalizeProtocol(node, chatJid, messageId, isGroup, isStatus);
+    const senderJid = resolveSender(key, isGroup, fromMe);
+    return normalizeProtocol(
+      node,
+      chatJid,
+      messageId,
+      senderJid,
+      isGroup,
+      isStatus,
+    );
   }
 
   // Reactions reference a target message.
@@ -223,10 +241,56 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
   });
 }
 
+/**
+ * Normalize a Baileys `messages.reaction` entry (a reaction to an
+ * already-synced message) into a reaction store. `reaction.text` is the emoji
+ * (empty/absent means the reaction was removed); the reactor and the reaction's
+ * own id come from `reaction.key`, and the target message is `targetKey`.
+ */
+export function normalizeReaction(
+  targetKey: proto.IMessageKey,
+  reaction: proto.IReaction,
+): NormalizeResult {
+  const chatJid = targetKey?.remoteJid ?? null;
+  const targetId = targetKey?.id ?? null;
+  const reactionKey = reaction.key ?? undefined;
+  const reactionId = reactionKey?.id ?? null;
+  if (!chatJid || !targetId || !reactionId) {
+    return { action: "skip", reason: "reaction-missing-key" };
+  }
+
+  const isGroup = isGroupJid(chatJid);
+  const isStatus = isStatusJid(chatJid);
+  const fromMe = Boolean(reactionKey?.fromMe);
+  const tsMs = toEpochSeconds(reaction.senderTimestampMs as LongLike);
+
+  return {
+    action: "store",
+    message: {
+      chatJid,
+      messageId: reactionId,
+      senderJid: reactionKey
+        ? resolveSender(reactionKey, isGroup, fromMe)
+        : null,
+      fromMe,
+      timestamp: tsMs != null ? Math.floor(tsMs / 1000) : null,
+      messageType: "reaction",
+      text: typeof reaction.text === "string" ? reaction.text : null,
+      hasMedia: false,
+      quotedMessageId: targetId,
+      quotedSenderJid: null,
+      isGroup,
+      isStatus,
+      pushName: null,
+    },
+  };
+}
+
 function normalizeProtocol(
   node: Record<string, unknown>,
   chatJid: string,
   messageId: string,
+  senderJid: string | null,
   isGroup: boolean,
   isStatus: boolean,
 ): NormalizeResult {
@@ -236,7 +300,14 @@ function normalizeProtocol(
     targetKey && typeof targetKey.id === "string" ? targetKey.id : null;
 
   if (type === proto.Message.ProtocolMessage.Type.REVOKE && targetId) {
-    return { action: "revoke", chatJid, targetId, isGroup, isStatus };
+    return {
+      action: "revoke",
+      chatJid,
+      targetId,
+      senderJid,
+      isGroup,
+      isStatus,
+    };
   }
 
   if (type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT && targetId) {
@@ -257,6 +328,7 @@ function normalizeProtocol(
       targetId,
       text,
       editId: messageId,
+      senderJid,
       isGroup,
       isStatus,
     };

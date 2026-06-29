@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { proto, type WAMessage } from "baileys";
-import { normalizeMessage } from "../src/baileys/normalize.js";
+import {
+  normalizeMessage,
+  normalizeReaction,
+} from "../src/baileys/normalize.js";
 
 function msg(overrides: Partial<WAMessage>): WAMessage {
   return {
@@ -67,14 +70,16 @@ describe("normalizeMessage: storable content", () => {
     expect(r.message.hasMedia).toBe(true);
   });
 
-  it("poll name", () => {
-    const r = normalizeMessage(
-      msg({ message: { pollCreationMessageV3: { name: "Lunch?" } } }),
-    );
-    expect(r.action).toBe("store");
-    if (r.action !== "store") return;
-    expect(r.message.messageType).toBe("poll");
-    expect(r.message.text).toBe("Lunch?");
+  it("poll name (V3 and V5)", () => {
+    for (const key of ["pollCreationMessageV3", "pollCreationMessageV5"]) {
+      const r = normalizeMessage(
+        msg({ message: { [key]: { name: "Lunch?" } } as never }),
+      );
+      expect(r.action).toBe("store");
+      if (r.action !== "store") continue;
+      expect(r.message.messageType).toBe("poll");
+      expect(r.message.text).toBe("Lunch?");
+    }
   });
 
   it("reaction references its target", () => {
@@ -122,9 +127,15 @@ describe("normalizeMessage: storable content", () => {
 });
 
 describe("normalizeMessage: protocol actions", () => {
-  it("revoke targets the deleted message", () => {
+  it("revoke targets the deleted message and carries the sender", () => {
     const r = normalizeMessage(
       msg({
+        key: {
+          remoteJid: "g@g.us",
+          fromMe: false,
+          id: "REV",
+          participant: "49222:1@s.whatsapp.net",
+        },
         message: {
           protocolMessage: {
             type: proto.Message.ProtocolMessage.Type.REVOKE,
@@ -136,6 +147,7 @@ describe("normalizeMessage: protocol actions", () => {
     expect(r.action).toBe("revoke");
     if (r.action !== "revoke") return;
     expect(r.targetId).toBe("DELETED1");
+    expect(r.senderJid).toBe("49222@s.whatsapp.net");
   });
 
   it("edit carries the new text and targets the original", () => {
@@ -167,6 +179,34 @@ describe("normalizeMessage: protocol actions", () => {
           },
         },
       }),
+    );
+    expect(r.action).toBe("skip");
+  });
+});
+
+describe("normalizeReaction", () => {
+  it("normalizes a reaction event into a reaction store", () => {
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "TARGET9" },
+      {
+        text: "❤️",
+        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "RXN1" },
+        senderTimestampMs: 1_700_000_000_000,
+      },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.messageType).toBe("reaction");
+    expect(r.message.messageId).toBe("RXN1");
+    expect(r.message.text).toBe("❤️");
+    expect(r.message.quotedMessageId).toBe("TARGET9");
+    expect(r.message.timestamp).toBe(1_700_000_000);
+  });
+
+  it("skips a reaction with no reaction key id", () => {
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", id: "T" },
+      { text: "👍" },
     );
     expect(r.action).toBe("skip");
   });
