@@ -57,22 +57,25 @@ export async function openAuthState(authDir: string): Promise<AuthState> {
 }
 
 interface PersistedCreds {
-  registered?: unknown;
   me?: { id?: unknown } | null;
 }
 
 /**
  * True only if `authDir` holds a *completed* linked session — `creds.json`
- * exists, parses, is `registered`, and has an authenticated `me`. A bare or
- * aborted/stale creds file (e.g. `registered: false`) is not treated as linked,
- * so `run` won't proceed into a QR-less reconnect loop.
+ * exists, parses, and carries an authenticated identity (`me.id`).
+ *
+ * `me.id` is the signal, NOT `registered`: in Baileys v7 a QR-linked session
+ * persists `me.id` from pair-success but leaves `registered` false (that flag
+ * is for pairing-code registration), so a successful QR link must still count.
+ * A bare/aborted creds file (no `me`) is not treated as linked, so `run` won't
+ * proceed into a QR-less reconnect loop.
  */
 export function authStateExists(authDir: string): boolean {
   const credsPath = join(authDir, "creds.json");
   if (!existsSync(credsPath)) return false;
   try {
     const creds = JSON.parse(readFileSync(credsPath, "utf8")) as PersistedCreds;
-    return creds.registered === true && typeof creds.me?.id === "string";
+    return typeof creds.me?.id === "string" && creds.me.id.length > 0;
   } catch {
     return false;
   }
