@@ -25,23 +25,24 @@ describe("openAuthState permissions", () => {
     expect(statSync(join(authDir, "creds.json")).mode & 0o777).toBe(0o600);
   });
 
-  it("treats only a registered creds.json as a linked session", async () => {
+  it("treats an authenticated (me.id) creds.json as a linked session", async () => {
     const authDir = join(dir, "auth");
     await openAuthState(authDir);
     const creds = join(authDir, "creds.json");
 
     expect(authStateExists(authDir)).toBe(false);
-    // Aborted/stale auth: file present but not yet registered.
+    // Aborted/stale auth: file present but no authenticated identity yet.
     writeFileSync(creds, JSON.stringify({ registered: false }));
     expect(authStateExists(authDir)).toBe(false);
     // Malformed creds are not a session either.
     writeFileSync(creds, "not json");
     expect(authStateExists(authDir)).toBe(false);
-    // Completed pairing.
+    // QR-linked session: me.id present even though registered stays false
+    // (Baileys v7 sets me from pair-success but leaves registered false).
     writeFileSync(
       creds,
       JSON.stringify({
-        registered: true,
+        registered: false,
         me: { id: "49123:1@s.whatsapp.net" },
       }),
     );
