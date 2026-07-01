@@ -231,6 +231,19 @@ describe("normalizeReaction", () => {
     );
     expect(r.action).toBe("store");
   });
+
+  it("does not take ownership from the target (a contact reacting to us)", () => {
+    // Our own message (target fromMe=true) reacted to by a contact whose
+    // reaction key carries no fromMe — must not be recorded as from_me.
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", fromMe: true, id: "MY" },
+      { text: "👍", key: { remoteJid: "c@s.whatsapp.net" } },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.fromMe).toBe(false);
+    expect(r.message.senderJid).toBe("c@s.whatsapp.net");
+  });
 });
 
 describe("normalizeMessage: skips", () => {

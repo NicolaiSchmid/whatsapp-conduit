@@ -191,6 +191,38 @@ describe("ingestMessage persistence", () => {
     d.db.close();
   });
 
+  it("dedupes a live reaction delivered via both upsert and reaction event", () => {
+    const d = deps(baseConfig);
+    ingestMessage(d, msg({ message: { conversation: "react to me" } }));
+    expect(countMessages(d.db)).toBe(1);
+
+    // Same reaction from the counterparty via messages.upsert (reactionMessage)
+    // and via the dedicated messages.reaction event → one deduped row.
+    ingestMessage(
+      d,
+      msg({
+        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "RXMSG" },
+        message: { reactionMessage: { text: "🎉", key: { id: "M1" } } },
+      }),
+    );
+    ingestReaction(
+      d,
+      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "M1" },
+      { text: "🎉", key: { remoteJid: "c@s.whatsapp.net", fromMe: false } },
+    );
+    // 1 original message + 1 reaction row (not 2 reaction rows).
+    expect(countMessages(d.db)).toBe(2);
+    expect(
+      getMessage(
+        d.db,
+        "personal",
+        "c@s.whatsapp.net",
+        "reaction:M1:c@s.whatsapp.net",
+      )?.text,
+    ).toBe("🎉");
+    d.db.close();
+  });
+
   it("applies the sender filter to update-revokes (blocked participant)", () => {
     const d = deps(
       resolveConfig(

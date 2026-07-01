@@ -215,20 +215,24 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
     );
   }
 
-  // Reactions reference a target message.
+  // Reactions reference a target message. Keyed identically to the dedicated
+  // messages.reaction path so a live reaction delivered via both events dedupes
+  // to one row (Baileys v7 emits both).
   if (contentType === "reactionMessage" && isRecord(node)) {
     const targetKey = isRecord(node.key) ? node.key : undefined;
-    const quotedMessageId =
+    const targetId =
       targetKey && typeof targetKey.id === "string" ? targetKey.id : null;
-    const quotedSenderJid =
-      targetKey && typeof targetKey.participant === "string"
-        ? normalizeJid(targetKey.participant)
-        : null;
-    return buildStore(msg, chatJid, messageId, isGroup, isStatus, fromMe, {
-      messageType: "reaction",
+    if (!targetId) return { action: "skip", reason: "reaction-missing-target" };
+    return buildReaction({
+      chatJid,
+      targetId,
+      targetParticipant:
+        targetKey && typeof targetKey.participant === "string"
+          ? targetKey.participant
+          : null,
+      reactorKey: key, // msg.key identifies the reactor
       text: typeof node.text === "string" ? node.text : null,
-      hasMedia: false,
-      quoted: { quotedMessageId, quotedSenderJid },
+      timestampSec: toEpochSeconds(msg.messageTimestamp as LongLike),
     });
   }
 
@@ -241,18 +245,61 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
   });
 }
 
+interface ReactionParts {
+  chatJid: string;
+  targetId: string;
+  /** Author of the reacted-to message (group participant), if known. */
+  targetParticipant: string | null;
+  /** The reactor's key. Ownership (`fromMe`) is taken only from here. */
+  reactorKey: proto.IMessageKey | undefined;
+  text: string | null | undefined;
+  timestampSec: number | null;
+}
+
+/**
+ * Build a reaction store row from either reaction event source
+ * (`messages.reaction` or a `reactionMessage` in `messages.upsert`), keyed
+ * deterministically on `(target, reactor)` so both sources dedupe to one row.
+ *
+ * Ownership comes only from `reactorKey.fromMe` — never the target key, which
+ * describes the reacted-to message's author, not the reactor. A missing text is
+ * a *removal*, stored as `""` (a non-null tombstone) so it overwrites a stored
+ * emoji.
+ */
+function buildReaction(parts: ReactionParts): NormalizeResult {
+  const isGroup = isGroupJid(parts.chatJid);
+  const isStatus = isStatusJid(parts.chatJid);
+  const fromMe = Boolean(parts.reactorKey?.fromMe);
+  const reactor = parts.reactorKey
+    ? resolveSender(parts.reactorKey, isGroup, fromMe)
+    : null;
+  const reactorToken = reactor ?? (fromMe ? "self" : "unknown");
+
+  return {
+    action: "store",
+    message: {
+      chatJid: parts.chatJid,
+      messageId: `reaction:${parts.targetId}:${reactorToken}`,
+      senderJid: reactor,
+      fromMe,
+      timestamp: parts.timestampSec,
+      messageType: "reaction",
+      text: typeof parts.text === "string" ? parts.text : "",
+      hasMedia: false,
+      quotedMessageId: parts.targetId,
+      quotedSenderJid: parts.targetParticipant
+        ? normalizeJid(parts.targetParticipant)
+        : null,
+      isGroup,
+      isStatus,
+      pushName: null,
+    },
+  };
+}
+
 /**
  * Normalize a Baileys `messages.reaction` entry (a reaction to an
- * already-synced message) into a reaction store.
- *
- * - `targetKey` is the reacted-to message; its `participant` (in groups) is the
- *   author of that message, preserved as `quotedSenderJid`.
- * - The reactor comes from `reaction.key` (participant / fromMe), which may not
- *   carry an `id`. The row id is therefore derived deterministically from the
- *   target id + reactor, so a later add/remove for the same (target, reactor)
- *   updates the same row.
- * - `reaction.text` is the emoji; an absent/empty text is a *removal*, stored as
- *   `""` (a non-null tombstone) so it overwrites a previously stored emoji.
+ * already-synced message) into a reaction store. See {@link buildReaction}.
  */
 export function normalizeReaction(
   targetKey: proto.IMessageKey,
@@ -263,39 +310,16 @@ export function normalizeReaction(
   if (!chatJid || !targetId) {
     return { action: "skip", reason: "reaction-missing-target" };
   }
-
-  const isGroup = isGroupJid(chatJid);
-  const isStatus = isStatusJid(chatJid);
-  const reactorKey = reaction.key ?? undefined;
-  const fromMe = Boolean(reactorKey?.fromMe ?? targetKey.fromMe);
-  const reactor = reactorKey
-    ? resolveSender(reactorKey, isGroup, fromMe)
-    : null;
-  const reactorToken = reactor ?? (fromMe ? "self" : "unknown");
   const tsMs = toEpochSeconds(reaction.senderTimestampMs as LongLike);
-
-  return {
-    action: "store",
-    message: {
-      chatJid,
-      messageId: `reaction:${targetId}:${reactorToken}`,
-      senderJid: reactor,
-      fromMe,
-      timestamp: tsMs != null ? Math.floor(tsMs / 1000) : null,
-      messageType: "reaction",
-      // Empty string (not null) so a removal overwrites a stored emoji.
-      text: typeof reaction.text === "string" ? reaction.text : "",
-      hasMedia: false,
-      quotedMessageId: targetId,
-      quotedSenderJid:
-        typeof targetKey.participant === "string"
-          ? normalizeJid(targetKey.participant)
-          : null,
-      isGroup,
-      isStatus,
-      pushName: null,
-    },
-  };
+  return buildReaction({
+    chatJid,
+    targetId,
+    targetParticipant:
+      typeof targetKey.participant === "string" ? targetKey.participant : null,
+    reactorKey: reaction.key ?? undefined,
+    text: reaction.text,
+    timestampSec: tsMs != null ? Math.floor(tsMs / 1000) : null,
+  });
 }
 
 function normalizeProtocol(
