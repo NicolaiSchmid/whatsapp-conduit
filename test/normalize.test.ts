@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { proto, type WAMessage } from "baileys";
-import { normalizeMessage } from "../src/baileys/normalize.js";
+import {
+  normalizeMessage,
+  normalizeReaction,
+} from "../src/baileys/normalize.js";
 
 function msg(overrides: Partial<WAMessage>): WAMessage {
   return {
@@ -67,14 +70,16 @@ describe("normalizeMessage: storable content", () => {
     expect(r.message.hasMedia).toBe(true);
   });
 
-  it("poll name", () => {
-    const r = normalizeMessage(
-      msg({ message: { pollCreationMessageV3: { name: "Lunch?" } } }),
-    );
-    expect(r.action).toBe("store");
-    if (r.action !== "store") return;
-    expect(r.message.messageType).toBe("poll");
-    expect(r.message.text).toBe("Lunch?");
+  it("poll name (V3 and V5)", () => {
+    for (const key of ["pollCreationMessageV3", "pollCreationMessageV5"]) {
+      const r = normalizeMessage(
+        msg({ message: { [key]: { name: "Lunch?" } } as never }),
+      );
+      expect(r.action).toBe("store");
+      if (r.action !== "store") continue;
+      expect(r.message.messageType).toBe("poll");
+      expect(r.message.text).toBe("Lunch?");
+    }
   });
 
   it("reaction references its target", () => {
@@ -122,9 +127,15 @@ describe("normalizeMessage: storable content", () => {
 });
 
 describe("normalizeMessage: protocol actions", () => {
-  it("revoke targets the deleted message", () => {
+  it("revoke targets the deleted message and carries the sender", () => {
     const r = normalizeMessage(
       msg({
+        key: {
+          remoteJid: "g@g.us",
+          fromMe: false,
+          id: "REV",
+          participant: "49222:1@s.whatsapp.net",
+        },
         message: {
           protocolMessage: {
             type: proto.Message.ProtocolMessage.Type.REVOKE,
@@ -136,6 +147,7 @@ describe("normalizeMessage: protocol actions", () => {
     expect(r.action).toBe("revoke");
     if (r.action !== "revoke") return;
     expect(r.targetId).toBe("DELETED1");
+    expect(r.senderJid).toBe("49222@s.whatsapp.net");
   });
 
   it("edit carries the new text and targets the original", () => {
@@ -169,6 +181,68 @@ describe("normalizeMessage: protocol actions", () => {
       }),
     );
     expect(r.action).toBe("skip");
+  });
+});
+
+describe("normalizeReaction", () => {
+  it("keys the row on (target, reactor) and preserves the target author", () => {
+    const r = normalizeReaction(
+      {
+        remoteJid: "g@g.us",
+        fromMe: false,
+        id: "TARGET9",
+        participant: "49author:1@s.whatsapp.net",
+      },
+      {
+        text: "❤️",
+        key: { remoteJid: "g@g.us", participant: "49reactor:2@s.whatsapp.net" },
+        senderTimestampMs: 1_700_000_000_000,
+      },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.messageType).toBe("reaction");
+    // Deterministic row id from target + reactor (no author-side message id).
+    expect(r.message.messageId).toBe(
+      "reaction:TARGET9:49reactor@s.whatsapp.net",
+    );
+    expect(r.message.senderJid).toBe("49reactor@s.whatsapp.net");
+    expect(r.message.text).toBe("❤️");
+    expect(r.message.quotedMessageId).toBe("TARGET9");
+    // Author of the reacted-to message is preserved.
+    expect(r.message.quotedSenderJid).toBe("49author@s.whatsapp.net");
+    expect(r.message.timestamp).toBe(1_700_000_000);
+  });
+
+  it("stores a removal (absent text) as an empty-string tombstone", () => {
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "T" },
+      { key: { remoteJid: "c@s.whatsapp.net", fromMe: false } },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.text).toBe("");
+  });
+
+  it("does not require a reactor-side message id", () => {
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", id: "T" },
+      { text: "👍" },
+    );
+    expect(r.action).toBe("store");
+  });
+
+  it("does not take ownership from the target (a contact reacting to us)", () => {
+    // Our own message (target fromMe=true) reacted to by a contact whose
+    // reaction key carries no fromMe — must not be recorded as from_me.
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", fromMe: true, id: "MY" },
+      { text: "👍", key: { remoteJid: "c@s.whatsapp.net" } },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.fromMe).toBe(false);
+    expect(r.message.senderJid).toBe("c@s.whatsapp.net");
   });
 });
 

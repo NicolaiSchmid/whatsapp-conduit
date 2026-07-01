@@ -3,6 +3,7 @@ import type { Logger } from "pino";
 import type { Config } from "../config.js";
 import type { Database } from "../db/index.js";
 import {
+  getChat,
   insertEvent,
   upsertChat,
   upsertMessage,
@@ -12,6 +13,8 @@ import { nowSec } from "../util/time.js";
 import { isGroupJid, isStatusJid } from "./jid.js";
 import {
   normalizeMessage,
+  normalizeReaction,
+  resolveSender,
   type NormalizedMessage,
   type NormalizeResult,
 } from "./normalize.js";
@@ -27,10 +30,17 @@ export interface IngestDeps {
 /** Reasons that warrant an auditable `ignored` event row (vs. bulk categories). */
 const AUDITED_IGNORE_REASONS: ReadonlySet<string> = new Set([
   "chat-blocked",
+  "chat-blocked-db",
   "sender-blocked",
+  "sender-unknown",
   "not-in-allowlist",
   "sender-not-in-allowlist",
 ]);
+
+/** True if the chat was blocked via `chats block` (DB policy flag). */
+function chatBlockedInDb(deps: IngestDeps, chatJid: string): boolean {
+  return getChat(deps.db, deps.accountId, chatJid)?.is_blocked === 1;
+}
 
 /**
  * Register observe-only ingestion handlers on a socket. Strictly read-side:
@@ -64,6 +74,63 @@ export function registerIngestion(sock: WASocket, deps: IngestDeps): void {
       }
     }
   });
+
+  // Reactions to already-synced messages arrive via a dedicated event.
+  sock.ev.on("messages.reaction", (reactions) => {
+    for (const { key, reaction } of reactions) {
+      try {
+        ingestReaction(deps, key, reaction);
+      } catch (err) {
+        deps.logger.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "failed to ingest reaction",
+        );
+      }
+    }
+  });
+}
+
+interface ChatContext {
+  jid: string;
+  isGroup: boolean;
+  isStatus: boolean;
+}
+
+/**
+ * Apply chat-level filters (config category/allow/block plus the DB `is_blocked`
+ * flag set by `chats block`). Records an audited ignored event and returns false
+ * when the chat is filtered out.
+ */
+function chatPasses(
+  deps: IngestDeps,
+  ctx: ChatContext,
+  messageId: string | null,
+): boolean {
+  const decision = chatAllowedAtSync(deps.config, ctx);
+  if (!decision.store) {
+    recordIgnored(deps, ctx.jid, messageId, decision.reason);
+    return false;
+  }
+  if (chatBlockedInDb(deps, ctx.jid)) {
+    recordIgnored(deps, ctx.jid, messageId, "chat-blocked-db");
+    return false;
+  }
+  return true;
+}
+
+/** Apply the sender filter; record an ignored event and return false on reject. */
+function senderPasses(
+  deps: IngestDeps,
+  chatJid: string,
+  senderJid: string | null,
+  messageId: string | null,
+): boolean {
+  const decision = senderAllowedAtSync(deps.config, senderJid);
+  if (!decision.store) {
+    recordIgnored(deps, chatJid, messageId, decision.reason);
+    return false;
+  }
+  return true;
 }
 
 /** Ingest a single message from `messages.upsert`. */
@@ -74,7 +141,7 @@ export function ingestMessage(deps: IngestDeps, msg: WAMessage): void {
     return;
   }
 
-  const ctx =
+  const ctx: ChatContext =
     result.action === "store"
       ? {
           jid: result.message.chatJid,
@@ -87,26 +154,16 @@ export function ingestMessage(deps: IngestDeps, msg: WAMessage): void {
           isStatus: result.isStatus,
         };
 
-  const chatDecision = chatAllowedAtSync(deps.config, ctx);
-  if (!chatDecision.store) {
-    recordIgnored(deps, ctx.jid, messageIdOf(result), chatDecision.reason);
-    return;
-  }
+  const messageId = messageIdOf(result);
+  if (!chatPasses(deps, ctx, messageId)) return;
+
+  // The sender filter applies to stores AND protocol edits/revokes alike — a
+  // blocked sender must not be able to write edited text or tombstones either.
+  const senderJid =
+    result.action === "store" ? result.message.senderJid : result.senderJid;
+  if (!senderPasses(deps, ctx.jid, senderJid, messageId)) return;
 
   if (result.action === "store") {
-    const senderDecision = senderAllowedAtSync(
-      deps.config,
-      result.message.senderJid,
-    );
-    if (!senderDecision.store) {
-      recordIgnored(
-        deps,
-        ctx.jid,
-        result.message.messageId,
-        senderDecision.reason,
-      );
-      return;
-    }
     persistStore(deps, result.message, rawJsonOf(deps.config, msg));
     return;
   }
@@ -123,7 +180,33 @@ export function ingestMessage(deps: IngestDeps, msg: WAMessage): void {
   }
 
   // edit
-  persistEdit(deps, result, ctx.isGroup, ctx.isStatus);
+  persistEdit(
+    deps,
+    result,
+    ctx.isGroup,
+    ctx.isStatus,
+    rawJsonOf(deps.config, msg),
+  );
+}
+
+/** Ingest a reaction from the dedicated `messages.reaction` event. */
+export function ingestReaction(
+  deps: IngestDeps,
+  key: proto.IMessageKey,
+  reaction: proto.IReaction,
+): void {
+  const result = normalizeReaction(key, reaction);
+  if (result.action !== "store") return;
+  const { message } = result;
+  const ctx: ChatContext = {
+    jid: message.chatJid,
+    isGroup: message.isGroup,
+    isStatus: message.isStatus,
+  };
+  if (!chatPasses(deps, ctx, message.messageId)) return;
+  if (!senderPasses(deps, ctx.jid, message.senderJid, message.messageId))
+    return;
+  persistStore(deps, message, null);
 }
 
 /** Handle `messages.update` — used here only to capture delete-for-everyone. */
@@ -141,12 +224,22 @@ export function ingestUpdate(
     update.update?.message === null;
   if (!isRevoke) return;
 
-  const ctx = {
+  const ctx: ChatContext = {
     jid: chatJid,
     isGroup: isGroupJid(chatJid),
     isStatus: isStatusJid(chatJid),
   };
-  if (!chatAllowedAtSync(deps.config, ctx).store) return;
+  if (!chatPasses(deps, ctx, targetId)) return;
+
+  // The live revoke route must honor the sender filter too. Derive the sender
+  // from the update key when present; otherwise null fails closed under a
+  // configured sender allowlist.
+  const senderJid = resolveSender(
+    update.key,
+    ctx.isGroup,
+    Boolean(update.key.fromMe),
+  );
+  if (!senderPasses(deps, chatJid, senderJid, targetId)) return;
 
   persistRevoke(deps, chatJid, targetId, ctx.isGroup, ctx.isStatus);
 }
@@ -223,9 +316,14 @@ function persistEdit(
   result: Extract<NormalizeResult, { action: "edit" }>,
   isGroup: boolean,
   isStatus: boolean,
+  rawJson: string | null,
 ): void {
   const storeText = deps.config.privacy.storeMessageText;
   const text = storeText ? result.text : null;
+  // Explicit loss over invented data: if the edited content could not be
+  // parsed, keep the raw edit payload (when enabled) as an event so it stays
+  // recoverable rather than discarding the only copy of the new content.
+  const preserveRaw = result.text === null && rawJson !== null;
   const tx = deps.db.transaction(() => {
     upsertChat(deps.db, {
       accountId: deps.accountId,
@@ -241,6 +339,14 @@ function persistEdit(
       normalizedText: text,
       editedMessageId: result.editId,
     });
+    if (preserveRaw) {
+      insertEvent(deps.db, {
+        accountId: deps.accountId,
+        eventType: "edit_unparsed",
+        eventTs: nowSec(),
+        rawJson,
+      });
+    }
   });
   tx();
 }

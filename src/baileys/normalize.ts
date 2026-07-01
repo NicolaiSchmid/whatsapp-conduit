@@ -47,6 +47,7 @@ export type NormalizeResult =
       action: "revoke";
       chatJid: string;
       targetId: string;
+      senderJid: string | null;
       isGroup: boolean;
       isStatus: boolean;
     }
@@ -56,6 +57,7 @@ export type NormalizeResult =
       targetId: string;
       text: string | null;
       editId: string;
+      senderJid: string | null;
       isGroup: boolean;
       isStatus: boolean;
     }
@@ -97,7 +99,16 @@ const CONTENT_TYPE_MAP: Partial<Record<string, MessageType>> = {
   pollCreationMessage: "poll",
   pollCreationMessageV2: "poll",
   pollCreationMessageV3: "poll",
+  pollCreationMessageV4: "poll",
+  pollCreationMessageV5: "poll",
 };
+
+/** Content types whose `.name` field holds the poll question. */
+const POLL_CONTENT_TYPES = new Set(
+  Object.keys(CONTENT_TYPE_MAP).filter((k) =>
+    k.startsWith("pollCreationMessage"),
+  ),
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -136,16 +147,15 @@ function extractText(contentType: string, node: unknown): string | null {
     case "videoMessage":
     case "documentMessage":
       return typeof node.caption === "string" ? node.caption : null;
-    case "pollCreationMessage":
-    case "pollCreationMessageV2":
-    case "pollCreationMessageV3":
-      return typeof node.name === "string" ? node.name : null;
     default:
+      if (POLL_CONTENT_TYPES.has(contentType)) {
+        return typeof node.name === "string" ? node.name : null;
+      }
       return null;
   }
 }
 
-function resolveSender(
+export function resolveSender(
   key: proto.IMessageKey,
   isGroup: boolean,
   fromMe: boolean,
@@ -194,23 +204,35 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
 
   // Protocol messages: revocations and edits target another message.
   if (contentType === "protocolMessage" && isRecord(node)) {
-    return normalizeProtocol(node, chatJid, messageId, isGroup, isStatus);
+    const senderJid = resolveSender(key, isGroup, fromMe);
+    return normalizeProtocol(
+      node,
+      chatJid,
+      messageId,
+      senderJid,
+      isGroup,
+      isStatus,
+    );
   }
 
-  // Reactions reference a target message.
+  // Reactions reference a target message. Keyed identically to the dedicated
+  // messages.reaction path so a live reaction delivered via both events dedupes
+  // to one row (Baileys v7 emits both).
   if (contentType === "reactionMessage" && isRecord(node)) {
     const targetKey = isRecord(node.key) ? node.key : undefined;
-    const quotedMessageId =
+    const targetId =
       targetKey && typeof targetKey.id === "string" ? targetKey.id : null;
-    const quotedSenderJid =
-      targetKey && typeof targetKey.participant === "string"
-        ? normalizeJid(targetKey.participant)
-        : null;
-    return buildStore(msg, chatJid, messageId, isGroup, isStatus, fromMe, {
-      messageType: "reaction",
+    if (!targetId) return { action: "skip", reason: "reaction-missing-target" };
+    return buildReaction({
+      chatJid,
+      targetId,
+      targetParticipant:
+        targetKey && typeof targetKey.participant === "string"
+          ? targetKey.participant
+          : null,
+      reactorKey: key, // msg.key identifies the reactor
       text: typeof node.text === "string" ? node.text : null,
-      hasMedia: false,
-      quoted: { quotedMessageId, quotedSenderJid },
+      timestampSec: toEpochSeconds(msg.messageTimestamp as LongLike),
     });
   }
 
@@ -223,10 +245,88 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
   });
 }
 
+interface ReactionParts {
+  chatJid: string;
+  targetId: string;
+  /** Author of the reacted-to message (group participant), if known. */
+  targetParticipant: string | null;
+  /** The reactor's key. Ownership (`fromMe`) is taken only from here. */
+  reactorKey: proto.IMessageKey | undefined;
+  text: string | null | undefined;
+  timestampSec: number | null;
+}
+
+/**
+ * Build a reaction store row from either reaction event source
+ * (`messages.reaction` or a `reactionMessage` in `messages.upsert`), keyed
+ * deterministically on `(target, reactor)` so both sources dedupe to one row.
+ *
+ * Ownership comes only from `reactorKey.fromMe` — never the target key, which
+ * describes the reacted-to message's author, not the reactor. A missing text is
+ * a *removal*, stored as `""` (a non-null tombstone) so it overwrites a stored
+ * emoji.
+ */
+function buildReaction(parts: ReactionParts): NormalizeResult {
+  const isGroup = isGroupJid(parts.chatJid);
+  const isStatus = isStatusJid(parts.chatJid);
+  const fromMe = Boolean(parts.reactorKey?.fromMe);
+  const reactor = parts.reactorKey
+    ? resolveSender(parts.reactorKey, isGroup, fromMe)
+    : null;
+  const reactorToken = reactor ?? (fromMe ? "self" : "unknown");
+
+  return {
+    action: "store",
+    message: {
+      chatJid: parts.chatJid,
+      messageId: `reaction:${parts.targetId}:${reactorToken}`,
+      senderJid: reactor,
+      fromMe,
+      timestamp: parts.timestampSec,
+      messageType: "reaction",
+      text: typeof parts.text === "string" ? parts.text : "",
+      hasMedia: false,
+      quotedMessageId: parts.targetId,
+      quotedSenderJid: parts.targetParticipant
+        ? normalizeJid(parts.targetParticipant)
+        : null,
+      isGroup,
+      isStatus,
+      pushName: null,
+    },
+  };
+}
+
+/**
+ * Normalize a Baileys `messages.reaction` entry (a reaction to an
+ * already-synced message) into a reaction store. See {@link buildReaction}.
+ */
+export function normalizeReaction(
+  targetKey: proto.IMessageKey,
+  reaction: proto.IReaction,
+): NormalizeResult {
+  const chatJid = targetKey?.remoteJid ?? null;
+  const targetId = targetKey?.id ?? null;
+  if (!chatJid || !targetId) {
+    return { action: "skip", reason: "reaction-missing-target" };
+  }
+  const tsMs = toEpochSeconds(reaction.senderTimestampMs as LongLike);
+  return buildReaction({
+    chatJid,
+    targetId,
+    targetParticipant:
+      typeof targetKey.participant === "string" ? targetKey.participant : null,
+    reactorKey: reaction.key ?? undefined,
+    text: reaction.text,
+    timestampSec: tsMs != null ? Math.floor(tsMs / 1000) : null,
+  });
+}
+
 function normalizeProtocol(
   node: Record<string, unknown>,
   chatJid: string,
   messageId: string,
+  senderJid: string | null,
   isGroup: boolean,
   isStatus: boolean,
 ): NormalizeResult {
@@ -236,7 +336,14 @@ function normalizeProtocol(
     targetKey && typeof targetKey.id === "string" ? targetKey.id : null;
 
   if (type === proto.Message.ProtocolMessage.Type.REVOKE && targetId) {
-    return { action: "revoke", chatJid, targetId, isGroup, isStatus };
+    return {
+      action: "revoke",
+      chatJid,
+      targetId,
+      senderJid,
+      isGroup,
+      isStatus,
+    };
   }
 
   if (type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT && targetId) {
@@ -257,6 +364,7 @@ function normalizeProtocol(
       targetId,
       text,
       editId: messageId,
+      senderJid,
       isGroup,
       isStatus,
     };
