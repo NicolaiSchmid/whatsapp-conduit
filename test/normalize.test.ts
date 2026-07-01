@@ -185,30 +185,51 @@ describe("normalizeMessage: protocol actions", () => {
 });
 
 describe("normalizeReaction", () => {
-  it("normalizes a reaction event into a reaction store", () => {
+  it("keys the row on (target, reactor) and preserves the target author", () => {
     const r = normalizeReaction(
-      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "TARGET9" },
+      {
+        remoteJid: "g@g.us",
+        fromMe: false,
+        id: "TARGET9",
+        participant: "49author:1@s.whatsapp.net",
+      },
       {
         text: "❤️",
-        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "RXN1" },
+        key: { remoteJid: "g@g.us", participant: "49reactor:2@s.whatsapp.net" },
         senderTimestampMs: 1_700_000_000_000,
       },
     );
     expect(r.action).toBe("store");
     if (r.action !== "store") return;
     expect(r.message.messageType).toBe("reaction");
-    expect(r.message.messageId).toBe("RXN1");
+    // Deterministic row id from target + reactor (no author-side message id).
+    expect(r.message.messageId).toBe(
+      "reaction:TARGET9:49reactor@s.whatsapp.net",
+    );
+    expect(r.message.senderJid).toBe("49reactor@s.whatsapp.net");
     expect(r.message.text).toBe("❤️");
     expect(r.message.quotedMessageId).toBe("TARGET9");
+    // Author of the reacted-to message is preserved.
+    expect(r.message.quotedSenderJid).toBe("49author@s.whatsapp.net");
     expect(r.message.timestamp).toBe(1_700_000_000);
   });
 
-  it("skips a reaction with no reaction key id", () => {
+  it("stores a removal (absent text) as an empty-string tombstone", () => {
+    const r = normalizeReaction(
+      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "T" },
+      { key: { remoteJid: "c@s.whatsapp.net", fromMe: false } },
+    );
+    expect(r.action).toBe("store");
+    if (r.action !== "store") return;
+    expect(r.message.text).toBe("");
+  });
+
+  it("does not require a reactor-side message id", () => {
     const r = normalizeReaction(
       { remoteJid: "c@s.whatsapp.net", id: "T" },
       { text: "👍" },
     );
-    expect(r.action).toBe("skip");
+    expect(r.action).toBe("store");
   });
 });
 

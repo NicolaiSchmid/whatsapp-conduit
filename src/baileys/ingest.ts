@@ -14,6 +14,7 @@ import { isGroupJid, isStatusJid } from "./jid.js";
 import {
   normalizeMessage,
   normalizeReaction,
+  resolveSender,
   type NormalizedMessage,
   type NormalizeResult,
 } from "./normalize.js";
@@ -229,6 +230,16 @@ export function ingestUpdate(
     isStatus: isStatusJid(chatJid),
   };
   if (!chatPasses(deps, ctx, targetId)) return;
+
+  // The live revoke route must honor the sender filter too. Derive the sender
+  // from the update key when present; otherwise null fails closed under a
+  // configured sender allowlist.
+  const senderJid = resolveSender(
+    update.key,
+    ctx.isGroup,
+    Boolean(update.key.fromMe),
+  );
+  if (!senderPasses(deps, chatJid, senderJid, targetId)) return;
 
   persistRevoke(deps, chatJid, targetId, ctx.isGroup, ctx.isStatus);
 }

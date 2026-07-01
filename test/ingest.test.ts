@@ -4,6 +4,7 @@ import { resolveConfig, type Config } from "../src/config.js";
 import {
   ingestMessage,
   ingestReaction,
+  ingestUpdate,
   type IngestDeps,
 } from "../src/baileys/ingest.js";
 import { openDb } from "../src/db/index.js";
@@ -169,21 +170,63 @@ describe("ingestMessage persistence", () => {
     d.db.close();
   });
 
-  it("ingests a reaction from the messages.reaction event", () => {
+  it("ingests a reaction, and a later removal clears the emoji", () => {
     const d = deps(baseConfig);
     ingestMessage(d, msg({ message: { conversation: "react to me" } }));
-    ingestReaction(
-      d,
-      { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "M1" },
-      {
-        text: "🔥",
-        key: { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "RXN" },
-      },
-    );
-    const r = getMessage(d.db, "personal", "c@s.whatsapp.net", "RXN");
+    const target = { remoteJid: "c@s.whatsapp.net", fromMe: false, id: "M1" };
+    const reactorKey = { remoteJid: "c@s.whatsapp.net", fromMe: false };
+    // Reactor is the 1:1 counterparty → row id derived from target + reactor.
+    const rowId = "reaction:M1:c@s.whatsapp.net";
+
+    ingestReaction(d, target, { text: "🔥", key: reactorKey });
+    let r = getMessage(d.db, "personal", "c@s.whatsapp.net", rowId);
     expect(r?.message_type).toBe("reaction");
     expect(r?.text).toBe("🔥");
     expect(r?.quoted_message_id).toBe("M1");
+
+    // Removal (no text) overwrites the stored emoji on the same row.
+    ingestReaction(d, target, { key: reactorKey });
+    r = getMessage(d.db, "personal", "c@s.whatsapp.net", rowId);
+    expect(r?.text).toBe("");
+    d.db.close();
+  });
+
+  it("applies the sender filter to update-revokes (blocked participant)", () => {
+    const d = deps(
+      resolveConfig(
+        {
+          privacy: { include_groups: true },
+          filters: { blocked_senders: ["49bad@s.whatsapp.net"] },
+        },
+        { dataDir: "/data" },
+      ),
+    );
+    // Seed a group message, then a delete-for-everyone via messages.update
+    // from a blocked participant — it must not tombstone the message.
+    ingestMessage(
+      d,
+      msg({
+        key: {
+          remoteJid: "g@g.us",
+          fromMe: false,
+          id: "GM",
+          participant: "49ok@s.whatsapp.net",
+        },
+        message: { conversation: "hello group" },
+      }),
+    );
+    ingestUpdate(d, {
+      key: {
+        remoteJid: "g@g.us",
+        fromMe: false,
+        id: "GM",
+        participant: "49bad@s.whatsapp.net",
+      },
+      update: { messageStubType: proto.WebMessageInfo.StubType.REVOKE },
+    });
+    expect(
+      getMessage(d.db, "personal", "g@g.us", "GM")?.deleted_at ?? null,
+    ).toBeNull();
     d.db.close();
   });
 

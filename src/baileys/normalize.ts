@@ -155,7 +155,7 @@ function extractText(contentType: string, node: unknown): string | null {
   }
 }
 
-function resolveSender(
+export function resolveSender(
   key: proto.IMessageKey,
   isGroup: boolean,
   fromMe: boolean,
@@ -243,9 +243,16 @@ export function normalizeMessage(msg: WAMessage): NormalizeResult {
 
 /**
  * Normalize a Baileys `messages.reaction` entry (a reaction to an
- * already-synced message) into a reaction store. `reaction.text` is the emoji
- * (empty/absent means the reaction was removed); the reactor and the reaction's
- * own id come from `reaction.key`, and the target message is `targetKey`.
+ * already-synced message) into a reaction store.
+ *
+ * - `targetKey` is the reacted-to message; its `participant` (in groups) is the
+ *   author of that message, preserved as `quotedSenderJid`.
+ * - The reactor comes from `reaction.key` (participant / fromMe), which may not
+ *   carry an `id`. The row id is therefore derived deterministically from the
+ *   target id + reactor, so a later add/remove for the same (target, reactor)
+ *   updates the same row.
+ * - `reaction.text` is the emoji; an absent/empty text is a *removal*, stored as
+ *   `""` (a non-null tombstone) so it overwrites a previously stored emoji.
  */
 export function normalizeReaction(
   targetKey: proto.IMessageKey,
@@ -253,32 +260,37 @@ export function normalizeReaction(
 ): NormalizeResult {
   const chatJid = targetKey?.remoteJid ?? null;
   const targetId = targetKey?.id ?? null;
-  const reactionKey = reaction.key ?? undefined;
-  const reactionId = reactionKey?.id ?? null;
-  if (!chatJid || !targetId || !reactionId) {
-    return { action: "skip", reason: "reaction-missing-key" };
+  if (!chatJid || !targetId) {
+    return { action: "skip", reason: "reaction-missing-target" };
   }
 
   const isGroup = isGroupJid(chatJid);
   const isStatus = isStatusJid(chatJid);
-  const fromMe = Boolean(reactionKey?.fromMe);
+  const reactorKey = reaction.key ?? undefined;
+  const fromMe = Boolean(reactorKey?.fromMe ?? targetKey.fromMe);
+  const reactor = reactorKey
+    ? resolveSender(reactorKey, isGroup, fromMe)
+    : null;
+  const reactorToken = reactor ?? (fromMe ? "self" : "unknown");
   const tsMs = toEpochSeconds(reaction.senderTimestampMs as LongLike);
 
   return {
     action: "store",
     message: {
       chatJid,
-      messageId: reactionId,
-      senderJid: reactionKey
-        ? resolveSender(reactionKey, isGroup, fromMe)
-        : null,
+      messageId: `reaction:${targetId}:${reactorToken}`,
+      senderJid: reactor,
       fromMe,
       timestamp: tsMs != null ? Math.floor(tsMs / 1000) : null,
       messageType: "reaction",
-      text: typeof reaction.text === "string" ? reaction.text : null,
+      // Empty string (not null) so a removal overwrites a stored emoji.
+      text: typeof reaction.text === "string" ? reaction.text : "",
       hasMedia: false,
       quotedMessageId: targetId,
-      quotedSenderJid: null,
+      quotedSenderJid:
+        typeof targetKey.participant === "string"
+          ? normalizeJid(targetKey.participant)
+          : null,
       isGroup,
       isStatus,
       pushName: null,
